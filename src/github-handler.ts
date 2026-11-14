@@ -186,6 +186,7 @@ app.get("/callback", async (c) => {
 			email,
 			login,
 			name,
+			githubId: String(id),
 		} as Props,
 		request: oauthReqInfo,
 		scope: oauthReqInfo.scope,
