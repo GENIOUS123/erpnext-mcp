@@ -82,7 +82,7 @@ app.post("/authorize", async (c) => {
 		const approvedClientCookie = await addApprovedClient(
 			c.req.raw,
 			state.oauthReqInfo.clientId,
-			c.c.env.COOKIE_ENCRYPTION_KEY,
+			c.env.COOKIE_ENCRYPTION_KEY,
 		);
 
 		// Create OAuth state and bind it to this user's session
@@ -166,7 +166,7 @@ app.get("/callback", async (c) => {
 
 	// Exchange the code for an access token
 	const [accessToken, errResponse] = await fetchUpstreamAuthToken({
-		client_id: c.c.env.GITHUB_CLIENT_ID,
+		client_id: c.env.GITHUB_CLIENT_ID,
 		client_secret: c.env.GITHUB_CLIENT_SECRET,
 		code: c.req.query("code"),
 		redirect_uri: new URL("/callback", c.req.url).href,
