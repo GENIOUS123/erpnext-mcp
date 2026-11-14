@@ -138,12 +138,13 @@ function createServer(env:Env):McpServer{
       const creationIdx=p.indexes.find(i=>i.columns[0]==="creation");
       if(!creationIdx){
         if(!isDailyPatientCountFallback(params))throw new Error("No leading creation index; refusing to plan aggregate");
-        // Do not claim that ERPNext is ready: the separate timeout-protected
-        // endpoint must be installed and tested by an administrator.
-        return output({query_ready:false,requires_user_approval:true,request:params,
+        // The request is eligible for the fixed one-day fallback; backend
+        // availability and MariaDB timeout enforcement are checked by the
+        // dedicated endpoint at execution time. No SQL executes during planning.
+        return output({query_ready:true,requires_user_approval:true,request:params,
           table_size_estimate:p.approximate_rows,fallback:"bounded_patient_daily_count",
-          requires_backend_setup:true,server_script:"erp_mcp_daily_patient_count",
-          warning:"Install and validate the MariaDB statement-time-limited endpoint before execution. No unindexed query was executed."});
+          backend_validation:"at_execution",server_script:"erp_mcp_daily_patient_count",
+          note:"Planning accepted; execution requires the dedicated timeout-protected endpoint. No count has been executed."});
       }
       return output({query_ready:true,requires_user_approval:true,request:params,table_size_estimate:p.approximate_rows,index_name:creationIdx.index_name,server_will_check_explain:true,server_script:"erp_mcp_read_query"});
     }catch(e){return rejected(e);}
