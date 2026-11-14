@@ -64,3 +64,29 @@ Deploy using `npx wrangler deploy` in a GitHub-connected Cloudflare Worker. `wra
 ## Current verification status
 
 No live ERPNext credentials available here; I have not executed a production database query or verified a successful Worker build. Local package installation may be blocked by registry network access. Run `npm install && npm run check` (or the Cloudflare build) and review any errors before calling it production-ready.
+
+
+## GitHub OAuth on main (November 14, 2026)
+
+GitHub OAuth source is now on `main` using the Cloudflare Workers OAuth Provider and Cloudflare's reference GitHub authentication handler. The MCP access token is no longer used to authenticate MCP clients. **Not live until the following Cloudflare configuration is completed and the Worker build/authorization flow have been tested.**
+
+1. Cloudflare Dashboard → Storage & databases → KV → Create namespace: `erpnext-mcp-oauth`.
+2. Copy its namespace ID (not a secret) and add this entry to `wrangler.jsonc`:
+   ```json
+   "kv_namespaces": [{"binding":"OAUTH_KV","id":"YOUR_ACTUAL_KV_NAMESPACE_ID"}]
+   ```
+   Do **not** use a placeholder ID when deploying. Either commit the real KV ID to GitHub (it isn't a credential) or have the owner supply it for update. Without this binding, OAuth routes cannot work.
+3. Worker → Settings → Variables and Secrets:
+   - `GITHUB_CLIENT_ID` (Secret)
+   - `GITHUB_CLIENT_SECRET` (Secret)
+   - `GITHUB_ALLOWED_USER_ID` (Variable/Secret): the **numeric** GitHub account ID of the only approved person, **not** the GitHub username. To find it: authenticate to GitHub and inspect GitHub account profile API `https://api.github.com/users/YOUR_USERNAME`, field `id`.
+   - `COOKIE_ENCRYPTION_KEY` (Secret): `openssl rand -hex 32`
+   - Keep `ERP_BASE_URL`, `ERP_API_KEY`, `ERP_API_SECRET`.
+   - Legacy `MCP_ACCESS_TOKEN` is no longer used by the OAuth MCP route.
+4. Configure the GitHub OAuth application callback URL as `https://mcp.erclens.com/callback`.
+5. Deploy `main`. Test `https://mcp.erclens.com/.well-known/oauth-authorization-server` and `https://mcp.erclens.com/.well-known/oauth-protected-resource` and check the `/mcp` response has OAuth Bearer challenge metadata.
+6. In ChatGPT, choose OAuth for `https://mcp.erclens.com/mcp` and approve after signing into the allowed GitHub account.
+
+**Security:** OAuth tokens are issued only after the GitHub API returns the configured numeric user ID. The MCP tool factory also checks the bound GitHub ID before exposing any ERP data tools. ERP tool implementations retain mandatory index/table-size inspection and strictly read-only GET requests.
+
+**Critical:** This is a source update; it has not been verified to build or run in your account. If the Cloudflare deployment log reports missing `OAUTH_KV`, create the binding first, then redeploy. Keep the previous working deployment until configuration and tests succeed.
