@@ -126,27 +126,6 @@ function createServer(env:Env):McpServer{
       return output(result?.message??result);
     }catch(e){return rejected(e);}
   });
-  server.registerTool("erp_count_patients",{
-    description:"SENSITIVE LIVE DATABASE READ. Before calling, explicitly ask the user for permission to run this specific Patient COUNT with the exact date range, and wait for approval. User should configure ChatGPT permission mode Always ask. Only calls an approved parameterized, read-only, index-checked ERPNext v14 count endpoint; never executes user SQL.",
-    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
-    inputSchema:z.object({
-      date_from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive ERPNext site-local date (YYYY-MM-DD)"),
-      date_to_exclusive:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Exclusive ERPNext site-local date (YYYY-MM-DD)")
-    })
-  },async({date_from,date_to_exclusive})=>{
-    try{
-      const start=Date.parse(date_from+"T00:00:00Z");
-      const end=Date.parse(date_to_exclusive+"T00:00:00Z");
-      const span=(end-start)/86400000;
-      if(!Number.isFinite(span)||!Number.isInteger(span)||span<1||span>31)throw new Error("Date window must be 1 to 31 days");
-      // The backend enforces Patient Read permission, leading creation index
-      // presence, and parameterized aggregate-only SQL, independently.
-      const result=await erpGet(env,"/api/method/erp_mcp_count_patients",{
-        date_from,date_to:date_to_exclusive
-      });
-      return output(result?.message??result);
-    }catch(e){return rejected(e);}
-  });
   server.registerTool("erp_table_profile",{
     description:"Read live approximate table size (InnoDB estimates), data/index size and existing composite indexes before planning any new query.",
     inputSchema:z.object({doctype:z.string().min(1).max(80)})
