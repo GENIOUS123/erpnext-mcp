@@ -83,7 +83,7 @@ export async function fetchUpstreamAuthToken({
 // and provided to MCP handlers through getMcpAuthContext()
 export type Props = {
 	login: string;
-	name: string;
-	email: string;
-	accessToken: string;
+	name: string | null;
+	email: string | null;
+	githubId: string;
 };
