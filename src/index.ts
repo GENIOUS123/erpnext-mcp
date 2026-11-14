@@ -60,7 +60,8 @@ function createServer(env:Env):McpServer{
   // Never expose ERP tools to a missing or unrelated OAuth identity.
   const auth = getMcpAuthContext();
   const props = auth?.props as { githubId?: string } | undefined;
-  if (!env.GITHUB_ALLOWED_USER_ID || !props || props.githubId !== env.GITHUB_ALLOWED_USER_ID) {
+  const allowedGithubId = String(env.GITHUB_ALLOWED_USER_ID || "").trim();
+  if (!allowedGithubId || !props || props.githubId !== allowedGithubId) {
     throw new Error("Unauthorized GitHub account");
   }
   const server=new McpServer({name:"erpnext-v14-readonly",version:"0.2.0"});
