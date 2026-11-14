@@ -122,3 +122,43 @@ Set the **ChatGPT plugin's permission mode to Always ask** for the actual connec
 ### Important scope
 
 The new tool handles Patient creation counts only. More aggregations should be added as separately reviewed, fixed, parameterized, read-only endpoints with indexed predicates and narrow date windows. **Do not expose an arbitrary SQL executor or a generic System Console API.**
+
+
+## Reusable read-only aggregate gateway (2026-11-14)
+
+**Added to `main`:** `erp_prepare_read_query` and `erp_run_read_query` using a *single manually installed* ERPNext v14 Server Script, [`erpnext/server_scripts/erp_mcp_read_query.py`](erpnext/server_scripts/erp_mcp_read_query.py). This is a controlled SQL **query builder**, not remote Python System Console or arbitrary SQL execution.
+
+### Manual one-time ERPNext setup
+1. Review the backend script, then create **one** Server Script (Type API, Method `erp_mcp_read_query`, Allow Guest OFF).
+2. Paste the Python source and save. It contains only parameterized SELECT, index metadata and EXPLAIN. No DB schema/data mutation.
+3. Use a non-admin read-only ERPNext integration account. Note: `frappe.db.sql` bypasses Frappe row-level restrictions; the script only checks DocType Read and may return cross-location aggregates. Do not give the account access to DocTypes/data it should not aggregate.
+4. **Database administration prerequisite:** The API checks `SELECT @@max_statement_time` and **refuses to execute** unless the current MariaDB session reports a timeout of more than zero and no more than 5 seconds. Set this on an **isolated database connection/reader** or read replica, not globally on the ERPNext production database or shared Frappe DB user. A shared DB account resource limit would affect other ERP traffic, so it is not a safe shortcut. If isolation cannot be arranged, leave the gateway disabled; use reviewed fixed endpoints instead.
+5. The script checks for a leading `creation` index, limits each query to 1-31 days, uses EXPLAIN to reject full scans/unindexed/over-100,000 estimated rows, and caps grouped results to 50. It deliberately refuses expensive queries rather than relaxing its limits.
+6. Deploy the Cloudflare Worker from latest GitHub `main`. Open the ChatGPT plugin settings, choose **Always ask**, and refresh/reconnect the plugin to discover the two new tools.
+7. **Approval:** `erp_prepare_read_query` is non-data preflight, `erp_run_read_query` requires an explicit user approval in chat. ChatGPT's **Always ask** app permission is the practical client enforcement. The server currently cannot cryptographically verify that a human approved a given query—do not treat the tool's description as a technical approval gate.
+
+### Supported aggregates without another API
+- Patient counts and breakdown by `territory` or `sex`.
+- Lead counts grouped by `source`, `status`, or `territory`.
+- Patient Appointment counts grouped by `status`, `practitioner`, or `department`.
+- Patient Encounter counts grouped by `practitioner` or `company`.
+- Clinical Procedure counts grouped by `practitioner`, `procedure_template`, or `status`.
+- Sales Invoice counts and `SUM(base_grand_total)`, grouped by `docstatus` or `customer`.
+
+Every request accepts a date range on `creation` (inclusive start, exclusive end), and at most one allowlisted equality filter. **No raw SQL, joins, cross-table subqueries, or System Console Python.** Complex analytics need additional reviewed schema-specific query patterns or a separate protected read-only replica service.
+
+Example for today's Patient count:
+```json
+{
+  "doctype": "Patient",
+  "date_from": "2026-11-14",
+  "date_to_exclusive": "2026-11-15",
+  "metric": "count",
+  "group_by": "",
+  "filter_field": "",
+  "filter_value": ""
+}
+```
+This request will only succeed once the ERP Server Script, user permissions, creation index, MariaDB statement budget and MCP session connection are correct.
+
+**Deployment status:** source pushed, not executed against production or end-to-end verified. If authentication succeeds but tools are not visible, confirm the ChatGPT app was refreshed and that its new tool list was discovered.
