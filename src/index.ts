@@ -200,8 +200,8 @@ function createServer(env:Env):McpServer{
     query:z.object({
       base:z.string().min(1).max(90),
       alias:z.string().min(1).max(16).default("t"),
-      date_from:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
-      date_to_exclusive:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+      date_from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      date_to_exclusive:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       fields:z.array(universalField).max(20).default([]),
       joins:z.array(z.object({
         doctype:z.string().min(1).max(90),
