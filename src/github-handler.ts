@@ -40,7 +40,7 @@ app.get("/authorize", async (c) => {
 		// Skip approval dialog but still create secure state and bind to session
 		const { stateToken } = await createOAuthState(oauthReqInfo, c.env.OAUTH_KV);
 		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
-		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, { "Set-Cookie": sessionBindingCookie });
+		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, new Headers({ "Set-Cookie": sessionBindingCookie }));
 	}
 
 	// Generate CSRF protection for the approval form
@@ -103,7 +103,7 @@ app.post("/authorize", async (c) => {
 		headers.append("Set-Cookie", approvedClientCookie);
 		headers.append("Set-Cookie", sessionBindingCookie);
 
-		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, Object.fromEntries(headers));
+		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, headers);
 	} catch (error: any) {
 		console.error("POST /authorize error:", error);
 		if (error instanceof OAuthError) {
@@ -115,24 +115,20 @@ app.post("/authorize", async (c) => {
 });
 
 async function redirectToGithub(
-	request: Request,
-	stateToken: string,
-	clientId: string,
-	headers: Record<string, string> = {},
+  request: Request,
+  stateToken: string,
+  clientId: string,
+  headers: Headers = new Headers(),
 ) {
-	return new Response(null, {
-		headers: {
-			...headers,
-			location: getUpstreamAuthorizeUrl({
-				client_id: clientId,
-				redirect_uri: new URL("/callback", request.url).href,
-				scope: "read:user",
-				state: stateToken,
-				upstream_url: "https://github.com/login/oauth/authorize",
-			}),
-		},
-		status: 302,
-	});
+  // Keep multiple Set-Cookie values separate through the OAuth redirect.
+  headers.set("location", getUpstreamAuthorizeUrl({
+    client_id: clientId,
+    redirect_uri: new URL("/callback", request.url).href,
+    scope: "read:user",
+    state: stateToken,
+    upstream_url: "https://github.com/login/oauth/authorize",
+  }));
+  return new Response(null, { headers, status: 302 });
 }
 
 /**
