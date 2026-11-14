@@ -7,7 +7,7 @@ import { z } from "zod";
 import { FIELDS, assertFields, fieldsFor, validateFilters, type Filter } from "./policy";
 import { planQuery, assertProfile, type TableProfile, MAX_ROWS } from "./query-guard";
 
-const BUILD_ID = "universal-compat-20261114-2";
+const BUILD_ID = "read-any-permitted-20261114-3";
 const REGISTERED_TOOL_NAMES = ["erp_connection_status","erp_capabilities","erp_prepare_read_query","erp_run_read_query","erp_universal_read","erp_universal_diagnostics","erp_table_profile","erp_query_plan","erp_list_records"] as const;
 
 interface Env {
@@ -126,9 +126,9 @@ function createServer(env:Env):McpServer{
     note:"Tool registry is from this Worker build; backend availability is checked by erp_universal_diagnostics."
   }));
   server.registerTool("erp_capabilities",{
-    description:"Read-only ERPNext tools and approved fields. Requires installed metadata API.",
+    description:"Read-only ERPNext tools. Any DocType readable by the ERP API account is supported through permission-aware REST; protected secret fields are excluded.",
     inputSchema:z.object({})
-  },async()=>output({mode:"read-only",doctypes:FIELDS,max_page_size:MAX_ROWS,metadata_endpoint:"erp_mcp_table_profile",large_table_threshold:100000}));
+  },async()=>output({mode:"read-only",doctype_scope:"Any DocType readable by the ERP integration identity via ERPNext REST",legacy_allowlisted_fields:FIELDS,max_page_size:MAX_ROWS,metadata_endpoint:"erp_mcp_table_profile",large_table_threshold:100000}));
   const analyticsDoctypes = ["Patient","Lead","Patient Appointment","Patient Encounter","Clinical Procedure","Sales Invoice"] as const;
   const groupings: Record<string,readonly string[]> = {
     "Patient":["territory","sex"],
@@ -523,7 +523,7 @@ function createServer(env:Env):McpServer{
           requires_user_approval:true,request:query,
           note:"Planning only. To execute with explicit approval, call erp_list_records with same doctype and fields JSON."});
       }
-      if(!FIELDS[doctype]){
+      if(doctype!=="__UNIVERSAL__"){
         const name=safeDocTypeName(doctype);
         const selected=safeGenericFields(fields);
         const predicates=safeGenericFilters(filters as Filter[]);
@@ -560,7 +560,7 @@ function createServer(env:Env):McpServer{
         const data=result?.message??result;
         return output({...data,bridge:"erp_list_records",build_id:BUILD_ID});
       }
-      if(!FIELDS[doctype]){
+      if(doctype!=="__UNIVERSAL__"){
         const name=safeDocTypeName(doctype);
         const selected=safeGenericFields(fields);
         const predicates=safeGenericFilters(filters as Filter[]);
