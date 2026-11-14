@@ -7,6 +7,9 @@ import { z } from "zod";
 import { FIELDS, assertFields, fieldsFor, validateFilters, type Filter } from "./policy";
 import { planQuery, assertProfile, type TableProfile, MAX_ROWS } from "./query-guard";
 
+const BUILD_ID = "universal-debug-20261114-1";
+const REGISTERED_TOOL_NAMES = ["erp_connection_status","erp_capabilities","erp_prepare_read_query","erp_run_read_query","erp_universal_read","erp_table_profile","erp_query_plan","erp_list_records"] as const;
+
 interface Env {
   ERP_BASE_URL: string;
   ERP_API_KEY: string;
@@ -77,6 +80,7 @@ async function erpPost(env:Env,path:string,params:Record<string,string>):Promise
         else if(typeof parsed?.exception==="string")
           detail=": "+parsed.exception.slice(0,200);
       }catch{}
+      console.error("erp_universal_read upstream error",JSON.stringify({build_id:BUILD_ID,stage:"erp_api_call",http_status:response.status,api_method:"erp_mcp_universal_read"}));
       throw new Error("ERP universal endpoint failed (HTTP "+response.status+")"+detail);
     }
     if(raw.length>150000)throw new Error("ERP response exceeds 150KB");
@@ -115,7 +119,11 @@ function createServer(env:Env):McpServer{
     erp_configuration_present:Boolean(env.ERP_BASE_URL&&env.ERP_API_KEY&&env.ERP_API_SECRET),
     read_only:true,
     gateway_api_method:"erp_mcp_read_query",
-    note:"ERPNext Server Script installation and DB timeout need a separate live test"
+    build_id:BUILD_ID,
+    registered_tools:[...REGISTERED_TOOL_NAMES],
+    universal_tool_registered:true,
+    universal_api_method:"erp_mcp_universal_read",
+    note:"Tool registry is from this Worker build; backend availability is checked by erp_universal_diagnostics."
   }));
   server.registerTool("erp_capabilities",{
     description:"Read-only ERPNext tools and approved fields. Requires installed metadata API.",
@@ -247,6 +255,36 @@ function createServer(env:Env):McpServer{
       return output(result?.message??result);
     }catch(e){return rejected(e);}
   });
+  server.registerTool("erp_universal_diagnostics",{
+    description:"Safe diagnostics for the universal read bridge. Confirms active Worker build and performs schema-only probe of ERPNext erp_mcp_universal_read. Returns stage, HTTP status and sanitized error classification, never patient data or credentials. No live record read.",
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+    inputSchema:z.object({doctype:z.enum(["Clinical Procedure","Sales Invoice","Sales Invoice Item"]).default("Clinical Procedure")})
+  },async({doctype})=>{
+    const info={build_id:BUILD_ID,universal_tool_registered:true,api_method:"erp_mcp_universal_read",doctype};
+    if(!env.ERP_API_KEY||!env.ERP_API_SECRET||!env.ERP_BASE_URL)
+      return output({...info,ok:false,stage:"worker_configuration",error_code:"MISSING_ERP_CREDENTIALS"});
+    try{
+      const result=await erpPost(env,"/api/method/erp_mcp_universal_read",{
+        payload:JSON.stringify({mode:"schema",doctype})
+      });
+      const msg=result?.message??result;
+      if(msg?.success!==true||!Array.isArray(msg?.columns))
+        return output({...info,ok:false,stage:"erp_response_validation",error_code:"UNEXPECTED_SCHEMA_RESPONSE"});
+      return output({...info,ok:true,stage:"complete",column_count:msg.columns.length,
+        link_field_count:Array.isArray(msg.link_fields)?msg.link_fields.length:null});
+    }catch(e){
+      const err=e instanceof Error?e.message:"Unknown backend error";
+      const statusMatch=err.match(/HTTP (\\d{3})/);
+      const status=statusMatch?Number(statusMatch[1]):null;
+      let error_code="UPSTREAM_FAILURE";
+      if(status===401||status===403)error_code="ERP_AUTHORIZATION_FAILURE";
+      else if(status===404)error_code="ERP_METHOD_NOT_FOUND";
+      else if(status===500)error_code="ERP_SERVER_EXCEPTION";
+      else if(err.includes("aborted")||err.includes("AbortError"))error_code="ERP_HTTP_TIMEOUT";
+      else if(err.includes("fetch"))error_code="ERP_NETWORK_FAILURE";
+      return output({...info,ok:false,stage:"erp_api_call",http_status:status,error_code});
+    }
+  });
   server.registerTool("erp_table_profile",{
     description:"Read live approximate table size (InnoDB estimates), data/index size and existing composite indexes before planning any new query.",
     inputSchema:z.object({doctype:z.string().min(1).max(80)})
@@ -301,7 +339,7 @@ const mcpHandler = createMcpHandler(() => createServer(env as Env));
 const apiHandler = {
   fetch(request:Request, bindings:Env, ctx:ExecutionContext) {
     if(new URL(request.url).pathname==="/health")
-      return new Response(JSON.stringify({status:"ok",mode:"read-only",oauth:true}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
+      return new Response(JSON.stringify({status:"ok",service:"erpnext-mcp",mode:"read-only",oauth:true,mcp_path:"/mcp",build_id:BUILD_ID,universal_tool_registered:true,registered_tool_count:REGISTERED_TOOL_NAMES.length}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
     // OAuthProvider has already verified the MCP bearer token. Do not hide
     // tool discovery when ERP credentials are missing; guarded ERP calls fail
     // closed inside erpGet instead, with an actionable configuration error.
