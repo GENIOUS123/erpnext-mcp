@@ -46,6 +46,43 @@ async function erpGet(env:Env,path:string,params:Record<string,string>):Promise<
     return JSON.parse(raw);
   }finally{clearTimeout(timeout);}
 }
+async function erpPost(env:Env,path:string,params:Record<string,string>):Promise<any>{
+  if(!env.ERP_API_KEY||!env.ERP_API_SECRET||!env.ERP_BASE_URL)
+    throw new Error("ERPNext API bindings are not configured on the Worker");
+  const url=new URL(path,baseUrl(env).origin);
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),8000);
+  try{
+    const response=await fetch(url.toString(),{
+      method:"POST",
+      headers:{
+        Authorization:"token "+env.ERP_API_KEY+":"+env.ERP_API_SECRET,
+        Accept:"application/json",
+        "Content-Type":"application/x-www-form-urlencoded"
+      },
+      body:new URLSearchParams(params).toString(),
+      redirect:"manual",signal:controller.signal
+    });
+    if(response.status>=300&&response.status<400)
+      throw new Error("ERP endpoint redirected (HTTP "+response.status+")");
+    const raw=await response.text();
+    if(!response.ok){
+      // Errors may contain sensitive traceback or patient data; return only
+      // Frappe's safe message field where available, otherwise HTTP status.
+      let detail="";
+      try{
+        const parsed=JSON.parse(raw);
+        if(typeof parsed?.message==="string")
+          detail=": "+parsed.message.slice(0,300);
+        else if(typeof parsed?.exception==="string")
+          detail=": "+parsed.exception.slice(0,200);
+      }catch{}
+      throw new Error("ERP universal endpoint failed (HTTP "+response.status+")"+detail);
+    }
+    if(raw.length>150000)throw new Error("ERP response exceeds 150KB");
+    return JSON.parse(raw);
+  }finally{clearTimeout(timeout);}
+}
 async function getProfile(env:Env,doctype:string):Promise<TableProfile>{
   fieldsFor(doctype);
   // No fallback: the live metadata API must be installed and reachable.
@@ -149,6 +186,64 @@ function createServer(env:Env):McpServer{
         metric:params.metric,group_by:params.group_by,filter_field:params.filter_field,
         filter_value:params.filter_value
       });
+      return output(result?.message??result);
+    }catch(e){return rejected(e);}
+  });
+  // Structured universal SELECT: identifiers are verified against live
+  // information_schema.COLUMNS by the ERPNext API, never interpolated directly.
+  // A separate schema mode allows discovering custom links before building joins.
+  const universalScalar=z.union([z.string(),z.number(),z.boolean()]);
+  const universalField=z.string().min(3).max(100);
+  const universalSchema=z.object({
+    mode:z.enum(["schema","query"]),
+    doctype:z.string().max(90).optional(),
+    query:z.object({
+      base:z.string().min(1).max(90),
+      alias:z.string().min(1).max(16).default("t"),
+      date_from:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+      date_to_exclusive:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+      fields:z.array(universalField).max(20).default([]),
+      joins:z.array(z.object({
+        doctype:z.string().min(1).max(90),
+        alias:z.string().min(1).max(16),
+        type:z.enum(["left","inner"]).default("left"),
+        left:universalField,
+        right:universalField
+      })).max(3).default([]),
+      filters:z.array(z.object({
+        field:universalField,
+        op:z.enum(["=","!=",">",">=","<","<=","like","in","is_null","is_not_null"]),
+        value:z.union([universalScalar,z.array(universalScalar)]).optional()
+      })).max(12).default([]),
+      metrics:z.array(z.object({
+        fn:z.enum(["count","count_distinct","sum","min","max","avg"]),
+        field:universalField.optional(),
+        as:z.string().min(1).max(16).default("total")
+      })).max(5).default([]),
+      group_by:z.array(universalField).max(6).default([]),
+      order_by:z.array(z.object({
+        field:z.string().min(1).max(100),
+        direction:z.enum(["asc","desc"]).default("asc")
+      })).max(3).default([]),
+      limit:z.number().int().min(1).max(100).default(50),
+      offset:z.number().int().min(0).max(1000).default(0)
+    }).optional()
+  }).superRefine((v,ctx)=>{
+    if(v.mode==="schema"&&!v.doctype)
+      ctx.addIssue({code:"custom",message:"doctype is required for schema mode"});
+    if(v.mode==="query"&&!v.query)
+      ctx.addIssue({code:"custom",message:"query object is required for query mode"});
+  });
+  server.registerTool("erp_universal_read",{
+    description:"Universal, structured READ-ONLY ERPNext data tool. mode=schema reveals real DB columns and Link/Custom Link fields for a DocType without reading patient records. mode=query can SELECT up to 100 rows, join up to 3 approved DocTypes, filter, group and aggregate within a mandatory 1-31 day creation window. No raw SQL or writes, no mandatory index. Query mode accesses live records: ask the user for explicit approval of the exact scope before execution (configure ChatGPT App permission Always ask). Prefer schema discovery before joins to avoid guessing field names. Requires manually installed ERPNext Server Script erp_mcp_universal_read and a dedicated least-privilege API identity.",
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+    inputSchema:universalSchema
+  },async(params)=>{
+    try{
+      const payload=params.mode==="schema"
+        ?{mode:"schema",doctype:params.doctype}
+        :{mode:"query",query:params.query};
+      const result=await erpPost(env,"/api/method/erp_mcp_universal_read",{payload:JSON.stringify(payload)});
       return output(result?.message??result);
     }catch(e){return rejected(e);}
   });
