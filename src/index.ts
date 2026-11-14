@@ -7,7 +7,7 @@ import { z } from "zod";
 import { FIELDS, assertFields, fieldsFor, validateFilters, type Filter } from "./policy";
 import { planQuery, assertProfile, type TableProfile, MAX_ROWS } from "./query-guard";
 
-const BUILD_ID = "universal-debug-20261114-1";
+const BUILD_ID = "universal-compat-20261114-2";
 const REGISTERED_TOOL_NAMES = ["erp_connection_status","erp_capabilities","erp_prepare_read_query","erp_run_read_query","erp_universal_read","erp_universal_diagnostics","erp_table_profile","erp_query_plan","erp_list_records"] as const;
 
 interface Env {
@@ -285,12 +285,58 @@ function createServer(env:Env):McpServer{
       return output({...info,ok:false,stage:"erp_api_call",http_status:status,error_code});
     }
   });
+  // Compatibility bridge: ChatGPT may retain the original seven-tool catalog.
+  // Reuse the existing tool names and *their original input schemas* so a stale
+  // catalog can still access the universal ERPNext API without a reinstall.
+  // Prefixes on erp_table_profile are metadata only; no patient data is read.
+  async function universalSchemaProbe(doctype:string,diagnostic:boolean){
+    const known=["Clinical Procedure","Sales Invoice","Sales Invoice Item","Healthcare Service Unit"];
+    if(!known.includes(doctype))throw new Error("Unsupported schema probe DocType");
+    try{
+      const r=await erpPost(env,"/api/method/erp_mcp_universal_read",{
+        payload:JSON.stringify({mode:"schema",doctype})
+      });
+      const result=r?.message??r;
+      if(result?.success!==true||!Array.isArray(result?.columns))
+        throw new Error("Unexpected ERPNext universal schema response");
+      if(diagnostic)return {
+        build_id:BUILD_ID,bridge:"erp_table_profile",success:true,
+        stage:"complete",doctype,column_count:result.columns.length,
+        link_count:Array.isArray(result.link_fields)?result.link_fields.length:0
+      };
+      return {...result,bridge:"erp_table_profile",build_id:BUILD_ID};
+    }catch(e){
+      const message=e instanceof Error?e.message:"Unknown ERP API failure";
+      const status=message.match(/HTTP (\d{3})/);
+      return {success:false,build_id:BUILD_ID,stage:"erp_universal_api",
+        error_code:status?.[1]==="404"?"METHOD_NOT_FOUND":
+          status?.[1]==="401"||status?.[1]==="403"?"AUTH_FAILURE":
+          status?.[1]==="500"?"ERP_SERVER_ERROR":"API_REQUEST_FAILED",
+        http_status:status?Number(status[1]):null};
+    }
+  }
+  function parseBridgeQuery(fields:string[]){
+    if(fields.length!==1||fields[0].length>12000)
+      throw new Error("UNIVERSAL bridge expects exactly one JSON object in fields[0], max 12KB");
+    let q:unknown;
+    try{q=JSON.parse(fields[0]);}
+    catch{throw new Error("Invalid universal bridge JSON");}
+    const result=universalSchema.safeParse({mode:"query",query:q});
+    if(!result.success||!result.data.query)throw new Error("Universal query schema invalid");
+    return result.data.query;
+  }
   server.registerTool("erp_table_profile",{
-    description:"Read live approximate table size (InnoDB estimates), data/index size and existing composite indexes before planning any new query.",
+    description:"Read live table profile. Also supports schema:Clinical Procedure and diagnose:Clinical Procedure (or Sales Invoice, Sales Invoice Item, Healthcare Service Unit) to test universal API compatibility without patient-record access.",
     inputSchema:z.object({doctype:z.string().min(1).max(80)})
-  },async({doctype})=>{try{return output(await getProfile(env,doctype));}catch(e){return rejected(e);}});
+  },async({doctype})=>{
+    try{
+      if(doctype.startsWith("schema:"))return output(await universalSchemaProbe(doctype.slice(7),false));
+      if(doctype.startsWith("diagnose:"))return output(await universalSchemaProbe(doctype.slice(9),true));
+      return output(await getProfile(env,doctype));
+    }catch(e){return rejected(e);}
+  });
   server.registerTool("erp_query_plan",{
-    description:"Read-only query preflight for allowlisted fields, valid filters and bounded pagination; no index required.",
+    description:"Read-only query preflight. For compatibility use doctype __UNIVERSAL__ and fields[0] containing a JSON universal query object; does not execute, requires explicit approval before erp_list_records.",
     inputSchema:z.object({
       doctype:z.string().min(1).max(80),
       fields:z.array(z.string()).min(1).max(16),
@@ -301,6 +347,12 @@ function createServer(env:Env):McpServer{
     })
   },async({doctype,fields,filters,limit_start,limit_page_length,order_by})=>{
     try{
+      if(doctype==="__UNIVERSAL__"){
+        const query=parseBridgeQuery(fields);
+        return output({approved:true,bridge:"erp_query_plan",build_id:BUILD_ID,
+          requires_user_approval:true,request:query,
+          note:"Planning only. To execute with explicit approval, call erp_list_records with same doctype and fields JSON."});
+      }
       const safeFields=assertFields(doctype,fields);
       const safeFilters=validateFilters(doctype,filters as Filter[]);
       const profile=await getProfile(env,doctype);
@@ -308,7 +360,7 @@ function createServer(env:Env):McpServer{
     }catch(e){return rejected(e);}
   });
   server.registerTool("erp_list_records",{
-    description:"Read-only allowlisted record retrieval with strict page and offset limits; no index required.",
+    description:"Read-only allowlisted record retrieval. Compatibility: doctype __UNIVERSAL__, fields=[JSON query object], allows validated joined SELECT through universal API; ask explicit user approval before executing live data.",
     inputSchema:z.object({
       doctype:z.string().min(1).max(80),
       fields:z.array(z.string()).min(1).max(16),
@@ -319,6 +371,13 @@ function createServer(env:Env):McpServer{
     })
   },async({doctype,fields,filters,limit_start,limit_page_length,order_by})=>{
     try{
+      if(doctype==="__UNIVERSAL__"){
+        const query=parseBridgeQuery(fields);
+        const result=await erpPost(env,"/api/method/erp_mcp_universal_read",{
+          payload:JSON.stringify({mode:"query",query})
+        });
+        return output({...result?.message??result,bridge:"erp_list_records",build_id:BUILD_ID});
+      }
       const safeFields=assertFields(doctype,fields);
       const safeFilters=validateFilters(doctype,filters as Filter[]);
       const profile=await getProfile(env,doctype);
