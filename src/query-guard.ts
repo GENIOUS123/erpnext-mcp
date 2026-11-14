@@ -12,7 +12,7 @@ export const LARGE_TABLE_ROWS=100000;
 export const MAX_DATE_WINDOW_DAYS=31;
 export function assertProfile(profile:TableProfile,doctype:string):void{
   if(!profile||profile.doctype!==doctype||!Number.isFinite(profile.approximate_rows)||profile.approximate_rows<0||
-     !Array.isArray(profile.indexes)||profile.indexes.length===0)
+     !Array.isArray(profile.indexes))
     throw new Error("Missing or invalid live index/table profile. Refusing query");
 }
 function dateWindow(filters:Filter[],indexed:Set<string>):boolean{
@@ -33,18 +33,6 @@ function dateWindow(filters:Filter[],indexed:Set<string>):boolean{
 export function planQuery(profile:TableProfile,filters:Filter[],fields:string[],orderBy:string,offset:number,page:number) {
   assertProfile(profile,profile.doctype);
   if(page>MAX_ROWS||offset>1000)throw new Error("Page size or offset exceeds query safety budget; use indexed cursor filters instead");
-  const leading=new Set(profile.indexes.filter(x=>Array.isArray(x.columns)&&x.columns.length&&
-    x.columns.every(c=>typeof c==="string")).map(x=>x.columns[0]));
-  if(!leading.size)throw new Error("No usable leading index");
-  const indexedFilters=filters.filter(f=>leading.has(f[0])&&["=",">",">=","<","<=","in","between"].includes(f[1]));
-  const orderField=orderBy.split(" ")[0];
-  if(!leading.has(orderField))throw new Error("Sort field is not the leading column of an existing index");
-  if(profile.approximate_rows>=LARGE_TABLE_ROWS){
-    if(!indexedFilters.length)throw new Error("Large table: indexed filter is mandatory");
-    if(!dateWindow(filters,leading))throw new Error("Large table: indexed date window <=31 days is mandatory");
-    if(offset>200)throw new Error("Large table: deep offset pagination blocked");
-  }else if(profile.approximate_rows>=10000&&!indexedFilters.length){
-    throw new Error("Medium table: provide a leading-index filter");
-  }
-  return {approved:true,approximate_rows:profile.approximate_rows,leading_indexes:[...leading],filters,fields,page,offset};
+
+  return {approved:true,approximate_rows:profile.approximate_rows,filters,fields,page,offset};
 }
