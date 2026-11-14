@@ -341,6 +341,61 @@ function createServer(env:Env):McpServer{
     inputSchema:z.object({doctype:z.string().min(1).max(80)})
   },async({doctype})=>{
     try{
+      if(doctype==="audit:encounter-opportunity"){
+        // Metadata-only audit; do not fetch or return patient records,
+        // script source, tokens, credentials, or arbitrary DocTypes.
+        const audited=["Patient Encounter","Opportunity"];
+        const result:{build_id:string;read_only:boolean;doctypes:unknown[];automations:unknown[]}={
+          build_id:BUILD_ID,read_only:true,doctypes:[],automations:[]
+        };
+        for(const name of audited){
+          const item:{doctype:string;fields:unknown[];error?:string}={doctype:name,fields:[]};
+          try{
+            const response=await erpGet(env,"/api/resource/DocType/"+encodeURIComponent(name),{});
+            const defs=Array.isArray(response?.data?.fields)?response.data.fields:[];
+            item.fields=defs.slice(0,250).map((f:any)=>({
+              fieldname:f.fieldname,fieldtype:f.fieldtype,options:f.options,
+              reqd:f.reqd,read_only:f.read_only,default:f.default,
+              depends_on:f.depends_on,mandatory_depends_on:f.mandatory_depends_on
+            }));
+          }catch(e){
+            const msg=e instanceof Error?e.message:"";
+            item.error="DocType metadata inaccessible"+(msg.includes("HTTP 403")?" (403)":msg.includes("HTTP 404")?" (404)":"");
+          }
+          try{
+            const response=await erpGet(env,"/api/resource/Custom Field",{
+              fields:JSON.stringify(["name","dt","fieldname","fieldtype","options","reqd","read_only","default"]),
+              filters:JSON.stringify([["dt","=",name]]),limit_page_length:"100"
+            });
+            item.fields=[...item.fields,...(Array.isArray(response?.data)?response.data:[]).map((f:any)=>({
+              fieldname:f.fieldname,fieldtype:f.fieldtype,options:f.options,
+              reqd:f.reqd,read_only:f.read_only,default:f.default,custom:true
+            }))];
+          }catch{}
+          result.doctypes.push(item);
+        }
+        const automationTypes=[
+          {doctype:"Server Script",fields:["name","script_type","reference_doctype","doctype_event","disabled","api_method"],filter:"reference_doctype"},
+          {doctype:"Client Script",fields:["name","dt","enabled"],filter:"dt"}
+        ];
+        for(const type of automationTypes){
+          for(const name of audited){
+            try{
+              const res=await erpGet(env,"/api/resource/"+encodeURIComponent(type.doctype),{
+                fields:JSON.stringify(type.fields),
+                filters:JSON.stringify([[type.filter,"=",name]]),
+                limit_page_length:"100"
+              });
+              result.automations.push({doctype:type.doctype,applies_to:name,
+                definitions:Array.isArray(res?.data)?res.data:[]});
+            }catch(e){
+              result.automations.push({doctype:type.doctype,applies_to:name,
+                error:"Automation metadata inaccessible"});
+            }
+          }
+        }
+        return output(result);
+      }
       if(doctype==="inspect_universal_script"){
         try{
           const result=await erpGet(env,"/api/resource/Server Script",{
