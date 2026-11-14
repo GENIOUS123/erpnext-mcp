@@ -96,7 +96,9 @@ else:
     def field_sql(path, known):
         if not isinstance(path, str) or path.count(".") != 1:
             frappe.throw("Use alias.column for every field")
-        a, f = path.split(".")
+        parts = path.split(".")
+        a = parts[0]
+        f = parts[1]
         if a not in known or f not in known[a]["columns"]:
             frappe.throw("Unknown/unauthorized field: " + str(path))
         return "`" + a + "`.`" + f + "`"
