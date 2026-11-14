@@ -8,5 +8,11 @@
   "workers_dev": true,
   "observability": {
     "enabled": true
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "6ab1676aa1f9415fbaa0fde02d2f5e50"
+    }
+  ]
 }
