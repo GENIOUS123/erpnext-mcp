@@ -35,7 +35,11 @@ app.get("/health", (c) => c.json({
   service:"erpnext-mcp",
   mode:"read-only",
   oauth:true,
-  mcp_path:"/mcp"
+  mcp_path:"/mcp",
+  build_id:"universal-debug-20261114-1",
+  universal_tool_registered:true,
+  registered_tool_count:9,
+  diagnostics_tool_registered:true
 }));
 
 app.get("/authorize", async (c) => {
