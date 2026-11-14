@@ -18,15 +18,14 @@ approved = [
     "Customer", "Camp", "Lead", "Pre Camp", "Appointment Request"
 ]
 
-raw = frappe.form_dict.get("payload") or ""
-if not raw or len(str(raw)) > 12000:
-    frappe.throw("Missing or oversized payload")
-try:
-    request = frappe.parse_json(raw)
-except Exception:
-    frappe.throw("Invalid JSON payload")
+# The Worker posts {"payload": {...}} as application/json.
+# Frappe v14 places the structured value directly in frappe.form_dict.
+# Avoid frappe.parse_json: it is not exposed in some safe_exec environments.
+request = frappe.form_dict.get("payload")
 if not isinstance(request, dict):
-    frappe.throw("Expected JSON object")
+    frappe.throw("Expected structured JSON payload object")
+if len(str(request)) > 12000:
+    frappe.throw("Oversized payload")
 
 mode = request.get("mode")
 if mode not in ["schema", "query"]:
