@@ -183,8 +183,16 @@ app.get("/callback", async (c) => {
 	const user = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
 	const { login, name, email, id } = user.data;
 	// Do not issue ERP access tokens for unapproved GitHub identities.
-	if (!c.env.GITHUB_ALLOWED_USER_ID || String(id) !== c.env.GITHUB_ALLOWED_USER_ID) {
-		return c.text("GitHub account is not authorized for ERPNext access", 403);
+	const allowedGithubId = String(c.env.GITHUB_ALLOWED_USER_ID || "").trim();
+	if (!allowedGithubId || String(id) !== allowedGithubId) {
+		// GitHub numeric IDs are public, but never reveal the configured allowlist
+		// or any OAuth tokens. This identifies which signed-in account was denied.
+		return c.text(
+			"GitHub account is not authorized for ERPNext access. Signed in as @" +
+			login + " (GitHub ID " + String(id) +
+			"). Check the Production GITHUB_ALLOWED_USER_ID binding.",
+			403,
+		);
 	}
 
 	// Return back to the MCP client a new token
