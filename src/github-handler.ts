@@ -36,7 +36,7 @@ app.get("/health", (c) => c.json({
   mode:"read-only",
   oauth:true,
   mcp_path:"/mcp",
-  build_id:"universal-compat-20261114-2",
+  build_id:"read-any-permitted-20261114-3",
   universal_tool_registered:true,
   registered_tool_count:9,
   diagnostics_tool_registered:true
