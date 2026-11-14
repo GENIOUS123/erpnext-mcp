@@ -162,3 +162,20 @@ Example for today's Patient count:
 This request will only succeed once the ERP Server Script, user permissions, creation index, MariaDB statement budget and MCP session connection are correct.
 
 **Deployment status:** source pushed, not executed against production or end-to-end verified. If authentication succeeds but tools are not visible, confirm the ChatGPT app was refreshed and that its new tool list was discovered.
+
+
+## Canonical OAuth redirect configuration
+
+GitHub OAuth's upstream callback is **exactly** `https://mcp.erclens.com/callback`. It is not `/mcp`, `/authorize`, or the ChatGPT client callback. In the GitHub OAuth App settings, set **Authorization callback URL** to this precise HTTPS URL. Set the Homepage URL to `https://mcp.erclens.com`.
+
+`wrangler.jsonc` now supplies `MCP_PUBLIC_ORIGIN=https://mcp.erclens.com`, and both the upstream authorization redirect and token exchange use the same canonical callback regardless of incoming Worker/proxy hostname. Do **not** put OAuth client secrets in `wrangler.jsonc`; keep `GITHUB_CLIENT_SECRET` and `COOKIE_ENCRYPTION_KEY` in Cloudflare Secrets. `keep_vars` is enabled for deployment persistence.
+
+The OAuth provider—not the GitHub OAuth App—handles the **ChatGPT redirect URI** registered through MCP client registration. Do not change GitHub's callback to ChatGPT's own redirect URI. The provider validates client redirect URIs and performs its final authorization redirect.
+
+Checklist to diagnose errors after deployment:
+- Verify the GitHub OAuth App callback above and the Client ID/Secret on the **same** app.
+- Ensure the GitHub account is ID `10105528` and the Cloudflare Production `GITHUB_ALLOWED_USER_ID` is `10105528`.
+- Check that `OAUTH_KV` is bound, the secret values exist in Production, and `/health` and OAuth metadata resolve.
+- Inspect Cloudflare Worker logs for `/authorize` and `/callback` errors. Do not log or send OAuth authorization codes, tokens, secrets or cookies.
+- Reconnect the existing ChatGPT MCP app after any OAuth client-registration changes.
+- GitHub source changes are not proof of Cloudflare deployment or an end-to-end login.
