@@ -341,6 +341,37 @@ function createServer(env:Env):McpServer{
     inputSchema:z.object({doctype:z.string().min(1).max(80)})
   },async({doctype})=>{
     try{
+      if(doctype==="inspect_universal_script"){
+        try{
+          const result=await erpGet(env,"/api/resource/Server Script",{
+            fields:JSON.stringify(["name","api_method","disabled","script_type"]),
+            filters:JSON.stringify([["api_method","=","erp_mcp_universal_read"]]),
+            limit_page_length:"20"
+          });
+          const entries=result?.data??[];
+          const checks=[];
+          for(const item of entries){
+            let fingerprint={name:item.name,api_method:item.api_method,disabled:item.disabled,script_type:item.script_type,
+              code_visible:false,has_new_payload_handler:null,has_old_json_parser:null};
+            try{
+              const one=await erpGet(env,"/api/resource/Server Script/"+encodeURIComponent(item.name),{});
+              const code=one?.data?.script;
+              if(typeof code==="string"){
+                fingerprint={...fingerprint,code_visible:true,
+                  has_new_payload_handler:code.includes('payload = frappe.form_dict.get("payload")')||code.includes('request = frappe.form_dict.get("payload")'),
+                  has_old_json_parser:code.includes("frappe.parse_json(raw)")};
+              }
+            }catch{}
+            checks.push(fingerprint);
+          }
+          return output({success:true,build_id:BUILD_ID,inspection:"metadata_only",entries:checks});
+        }catch(e){
+          const msg=e instanceof Error?e.message:"";
+          return output({success:false,inspection:"metadata_only",
+            error:"Cannot inspect Server Script via ERP API with current integration permissions",
+            status:(msg.match(/HTTP (\\d{3})/)??[])[1]??null});
+        }
+      }
       if(doctype.startsWith("schema:"))return output(await universalSchemaProbe(doctype.slice(7),false));
       if(doctype.startsWith("diagnose:"))return output(await universalSchemaProbe(doctype.slice(9),true));
       return output(await getProfile(env,doctype));
