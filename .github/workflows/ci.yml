@@ -1,0 +1,24 @@
+name: Validate ERPNext MCP Worker
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck Worker
+        run: npm run check
+      - name: Validate Wrangler
+        run: npx wrangler deploy --dry-run --outdir /tmp/erpnext-mcp-build
