@@ -308,11 +308,22 @@ function createServer(env:Env):McpServer{
     }catch(e){
       const message=e instanceof Error?e.message:"Unknown ERP API failure";
       const status=message.match(/HTTP (\d{3})/);
+      const knownHints=[
+        "Invalid JSON payload","Missing or oversized payload","Expected JSON object",
+        "Mode must be schema or query","DocType is not approved",
+        "DocType table not found","Unknown/unauthorized field",
+        "module has no attribute","NameError","AttributeError","SyntaxError",
+        "TypeError","PermissionError","ValidationError","not permitted",
+        "not allowed","not whitelisted","safe_exec"
+      ];
+      const matchingHint=knownHints.find(h=>message.toLowerCase().includes(h.toLowerCase()))??null;
       return {success:false,build_id:BUILD_ID,stage:"erp_universal_api",
         error_code:status?.[1]==="404"?"METHOD_NOT_FOUND":
           status?.[1]==="401"||status?.[1]==="403"?"AUTH_FAILURE":
+          status?.[1]==="417"?"FRAPPE_VALIDATION_ERROR":
           status?.[1]==="500"?"ERP_SERVER_ERROR":"API_REQUEST_FAILED",
-        http_status:status?Number(status[1]):null};
+        http_status:status?Number(status[1]):null,
+        safe_error_hint:matchingHint};
     }
   }
   function parseBridgeQuery(fields:string[]){
