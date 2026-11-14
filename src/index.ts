@@ -290,7 +290,7 @@ function createServer(env:Env):McpServer{
   // catalog can still access the universal ERPNext API without a reinstall.
   // Prefixes on erp_table_profile are metadata only; no patient data is read.
   async function universalSchemaProbe(doctype:string,diagnostic:boolean){
-    const known=["Clinical Procedure","Sales Invoice","Sales Invoice Item","Healthcare Service Unit"];
+    const known=["Clinical Procedure","Sales Invoice","Sales Invoice Item","Healthcare Service Unit","Patient Encounter","Opportunity","Patient Appointment","Sales Order","Patient"];
     if(!known.includes(doctype))throw new Error("Unsupported schema probe DocType");
     try{
       const r=await erpPost(env,"/api/method/erp_mcp_universal_read",{
