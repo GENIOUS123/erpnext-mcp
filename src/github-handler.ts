@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { Octokit } from "octokit";
@@ -18,6 +17,9 @@ import {
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
 
 app.get("/authorize", async (c) => {
+	if (!c.env.COOKIE_ENCRYPTION_KEY || c.env.COOKIE_ENCRYPTION_KEY.length < 32) {
+		return c.text("OAuth is not configured: COOKIE_ENCRYPTION_KEY secret must contain at least 32 characters", 503);
+	}
 	const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
 	const { clientId } = oauthReqInfo;
 	if (!clientId) {
@@ -25,11 +27,11 @@ app.get("/authorize", async (c) => {
 	}
 
 	// Check if client is already approved
-	if (await isClientApproved(c.req.raw, clientId, env.COOKIE_ENCRYPTION_KEY)) {
+	if (await isClientApproved(c.req.raw, clientId, c.env.COOKIE_ENCRYPTION_KEY)) {
 		// Skip approval dialog but still create secure state and bind to session
 		const { stateToken } = await createOAuthState(oauthReqInfo, c.env.OAUTH_KV);
 		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
-		return redirectToGithub(c.req.raw, stateToken, { "Set-Cookie": sessionBindingCookie });
+		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, { "Set-Cookie": sessionBindingCookie });
 	}
 
 	// Generate CSRF protection for the approval form
@@ -49,6 +51,9 @@ app.get("/authorize", async (c) => {
 });
 
 app.post("/authorize", async (c) => {
+	if (!c.env.COOKIE_ENCRYPTION_KEY || c.env.COOKIE_ENCRYPTION_KEY.length < 32) {
+		return c.text("OAuth is not configured: COOKIE_ENCRYPTION_KEY secret must contain at least 32 characters", 503);
+	}
 	try {
 		// Read form data once
 		const formData = await c.req.raw.formData();
@@ -77,7 +82,7 @@ app.post("/authorize", async (c) => {
 		const approvedClientCookie = await addApprovedClient(
 			c.req.raw,
 			state.oauthReqInfo.clientId,
-			c.env.COOKIE_ENCRYPTION_KEY,
+			c.c.env.COOKIE_ENCRYPTION_KEY,
 		);
 
 		// Create OAuth state and bind it to this user's session
@@ -89,7 +94,7 @@ app.post("/authorize", async (c) => {
 		headers.append("Set-Cookie", approvedClientCookie);
 		headers.append("Set-Cookie", sessionBindingCookie);
 
-		return redirectToGithub(c.req.raw, stateToken, Object.fromEntries(headers));
+		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, Object.fromEntries(headers));
 	} catch (error: any) {
 		console.error("POST /authorize error:", error);
 		if (error instanceof OAuthError) {
@@ -103,13 +108,14 @@ app.post("/authorize", async (c) => {
 async function redirectToGithub(
 	request: Request,
 	stateToken: string,
+	clientId: string,
 	headers: Record<string, string> = {},
 ) {
 	return new Response(null, {
 		headers: {
 			...headers,
 			location: getUpstreamAuthorizeUrl({
-				client_id: env.GITHUB_CLIENT_ID,
+				client_id: clientId,
 				redirect_uri: new URL("/callback", request.url).href,
 				scope: "read:user",
 				state: stateToken,
@@ -160,7 +166,7 @@ app.get("/callback", async (c) => {
 
 	// Exchange the code for an access token
 	const [accessToken, errResponse] = await fetchUpstreamAuthToken({
-		client_id: c.env.GITHUB_CLIENT_ID,
+		client_id: c.c.env.GITHUB_CLIENT_ID,
 		client_secret: c.env.GITHUB_CLIENT_SECRET,
 		code: c.req.query("code"),
 		redirect_uri: new URL("/callback", c.req.url).href,
