@@ -14,5 +14,10 @@
       "binding": "OAUTH_KV",
       "id": "6ab1676aa1f9415fbaa0fde02d2f5e50"
     }
-  ]
+  ],
+  "keep_vars": true,
+  "vars": {
+    "ERP_BASE_URL": "https://erp.erchms.com",
+    "GITHUB_ALLOWED_USER_ID": "10105528"
+  }
 }
