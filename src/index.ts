@@ -114,6 +114,19 @@ function createServer(env:Env):McpServer{
     if(params.metric==="sum_base_grand_total"&&params.doctype!=="Sales Invoice")throw new Error("SUM is approved only for Sales Invoice");
     if(params.doctype==="Sales Invoice"&&params.filter_field==="docstatus"&&!["0","1","2"].includes(params.filter_value))throw new Error("Invalid docstatus");
   }
+  // Exception is deliberately limited to an exact one-day Patient COUNT.
+  // It uses a separate, database-time-limited ERP endpoint, never the general
+  // read-query API. This does NOT relax normal record-list safety checks.
+  function isDailyPatientCountFallback(params:z.infer<typeof aggregateSchema>):boolean {
+    if(params.doctype!=="Patient"||params.metric!=="count"||
+       params.group_by||params.filter_field||params.filter_value)return false;
+    const start=Date.parse(params.date_from+"T00:00:00Z");
+    const end=Date.parse(params.date_to_exclusive+"T00:00:00Z");
+    return Number.isFinite(start)&&Number.isFinite(end)&&
+      end-start===86400000&&
+      new Date(start).toISOString().slice(0,10)===params.date_from&&
+      new Date(end).toISOString().slice(0,10)===params.date_to_exclusive;
+  }
   server.registerTool("erp_prepare_read_query",{
     description:"READ-ONLY PLANNING. Check the index and table size before a reusable aggregate query; returns the exact date/metric/group/filter requested. No patient data query is executed. Ask for the user's explicit approval before using erp_run_read_query.",
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
@@ -123,7 +136,15 @@ function createServer(env:Env):McpServer{
       validateAggregate(params);
       const p=await getProfile(env,params.doctype);
       const creationIdx=p.indexes.find(i=>i.columns[0]==="creation");
-      if(!creationIdx)throw new Error("No leading creation index; refusing to plan aggregate");
+      if(!creationIdx){
+        if(!isDailyPatientCountFallback(params))throw new Error("No leading creation index; refusing to plan aggregate");
+        // Do not claim that ERPNext is ready: the separate timeout-protected
+        // endpoint must be installed and tested by an administrator.
+        return output({query_ready:false,requires_user_approval:true,request:params,
+          table_size_estimate:p.approximate_rows,fallback:"bounded_patient_daily_count",
+          requires_backend_setup:true,server_script:"erp_mcp_daily_patient_count",
+          warning:"Install and validate the MariaDB statement-time-limited endpoint before execution. No unindexed query was executed."});
+      }
       return output({query_ready:true,requires_user_approval:true,request:params,table_size_estimate:p.approximate_rows,index_name:creationIdx.index_name,server_will_check_explain:true,server_script:"erp_mcp_read_query"});
     }catch(e){return rejected(e);}
   });
@@ -135,7 +156,21 @@ function createServer(env:Env):McpServer{
     try{
       validateAggregate(params);
       const p=await getProfile(env,params.doctype);
-      if(!p.indexes.some(i=>i.columns[0]==="creation"))throw new Error("No creation leading index; refusing query");
+      if(!p.indexes.some(i=>i.columns[0]==="creation")){
+        if(!isDailyPatientCountFallback(params))throw new Error("No creation leading index; refusing query");
+        // Dedicated, fixed-COUNT endpoint must apply a MariaDB per-statement
+        // timeout. Missing backend method fails closed, not via general API.
+        const fallback=await erpGet(env,"/api/method/erp_mcp_daily_patient_count",{
+          date_from:params.date_from,date_to_exclusive:params.date_to_exclusive
+        });
+        const data=fallback?.message;
+        if(data?.bounded_fallback!==true||data?.doctype!=="Patient"||
+           data?.metric!=="count"||data?.date_from!==params.date_from||
+           data?.date_to_exclusive!==params.date_to_exclusive||
+           typeof data?.total!=="number"||!Number.isSafeInteger(data.total)||data.total<0)
+          throw new Error("Daily count backend did not return an approved bounded response");
+        return output(data);
+      }
       const result=await erpGet(env,"/api/method/erp_mcp_read_query",{
         doctype:params.doctype,date_from:params.date_from,date_to:params.date_to_exclusive,
         metric:params.metric,group_by:params.group_by,filter_field:params.filter_field,
