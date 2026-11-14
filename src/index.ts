@@ -1,4 +1,8 @@
-import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
+import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
+import OAuthProvider from "@cloudflare/workers-oauth-provider";
+import { env } from "cloudflare:workers";
+import { GitHubHandler } from "./github-handler";
 import { z } from "zod";
 import { FIELDS, assertFields, fieldsFor, validateFilters, type Filter } from "./policy";
 import { planQuery, assertProfile, type TableProfile, MAX_ROWS } from "./query-guard";
@@ -7,7 +11,11 @@ interface Env {
   ERP_BASE_URL: string;
   ERP_API_KEY: string;
   ERP_API_SECRET: string;
-  MCP_ACCESS_TOKEN: string;
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
+  GITHUB_ALLOWED_USER_ID: string;
+  COOKIE_ENCRYPTION_KEY: string;
+  OAUTH_KV: KVNamespace;
 }
 function baseUrl(env:Env):URL {
   const base=new URL(env.ERP_BASE_URL);
@@ -46,6 +54,13 @@ function rejected(e:unknown){return {isError:true,...output({error:e instanceof 
 const filterValue=z.union([z.string(),z.number(),z.boolean(),z.array(z.union([z.string(),z.number(),z.boolean()]))]);
 const filtersSchema=z.array(z.tuple([z.string(),z.string(),filterValue])).max(8).default([]);
 function createServer(env:Env):McpServer{
+  // OAuthProvider validates tokens, while GitHubHandler only issues them to the approved account.
+  // Never expose ERP tools to a missing or unrelated OAuth identity.
+  const auth = getMcpAuthContext();
+  const props = auth?.props as { githubId?: string } | undefined;
+  if (!env.GITHUB_ALLOWED_USER_ID || !props || props.githubId !== env.GITHUB_ALLOWED_USER_ID) {
+    throw new Error("Unauthorized GitHub account");
+  }
   const server=new McpServer({name:"erpnext-v14-readonly",version:"0.2.0"});
   server.registerTool("erp_capabilities",{
     description:"Read-only, index-aware ERPNext tools and approved fields. Requires installed metadata API.",
@@ -101,15 +116,22 @@ function createServer(env:Env):McpServer{
   });
   return server;
 }
-export default {
-  async fetch(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
-    const path=new URL(request.url).pathname;
-    if(path==="/health")return new Response(JSON.stringify({status:"ok",mode:"read-only",requires_profile_endpoint:true}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
-    if(path!=="/mcp")return new Response("Not Found",{status:404});
-    if(!env.MCP_ACCESS_TOKEN||!env.ERP_API_KEY||!env.ERP_API_SECRET||!env.ERP_BASE_URL)
+const mcpHandler = createMcpHandler(() => createServer(env as Env));
+const apiHandler = {
+  fetch(request:Request, bindings:Env, ctx:ExecutionContext) {
+    if(new URL(request.url).pathname==="/health")
+      return new Response(JSON.stringify({status:"ok",mode:"read-only",oauth:true}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
+    if(!bindings.ERP_API_KEY||!bindings.ERP_API_SECRET||!bindings.ERP_BASE_URL||!bindings.GITHUB_ALLOWED_USER_ID)
       return new Response("Not configured",{status:503});
-    if(request.headers.get("Authorization")!=="Bearer "+env.MCP_ACCESS_TOKEN)
-      return new Response("Unauthorized",{status:401,headers:{"WWW-Authenticate":'Bearer realm="erpnext-mcp"'}});
-    return createMcpHandler(()=>createServer(env)).fetch(request);
+    return mcpHandler(request,bindings,ctx);
   }
 } satisfies ExportedHandler<Env>;
+export default new OAuthProvider<Env>({
+  apiHandler,
+  apiRoute:"/mcp",
+  authorizeEndpoint:"/authorize",
+  clientRegistrationEndpoint:"/register",
+  defaultHandler:GitHubHandler as any,
+  tokenEndpoint:"/token",
+  resourceMetadata:{resource:"https://mcp.erclens.com/mcp"}
+});
