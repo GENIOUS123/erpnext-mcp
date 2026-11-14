@@ -61,9 +61,9 @@ async function erpPost(env:Env,path:string,params:Record<string,string>):Promise
       headers:{
         Authorization:"token "+env.ERP_API_KEY+":"+env.ERP_API_SECRET,
         Accept:"application/json",
-        "Content-Type":"application/x-www-form-urlencoded"
+        "Content-Type":"application/json"
       },
-      body:new URLSearchParams(params).toString(),
+      body:JSON.stringify({payload:JSON.parse(params.payload)}),
       redirect:"manual",signal:controller.signal
     });
     if(response.status>=300&&response.status<400)
