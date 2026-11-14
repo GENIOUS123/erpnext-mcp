@@ -70,8 +70,8 @@ function createServer(env:Env):McpServer{
     description:"SENSITIVE LIVE DATABASE READ. Before calling, explicitly ask the user for permission to run this specific Patient COUNT with the exact date range, and wait for approval. User should configure ChatGPT permission mode Always ask. Only calls an approved parameterized, read-only, index-checked ERPNext v14 count endpoint; never executes user SQL.",
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
     inputSchema:z.object({
-      date_from:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/).describe("Inclusive ERPNext site-local date (YYYY-MM-DD)"),
-      date_to_exclusive:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/).describe("Exclusive ERPNext site-local date (YYYY-MM-DD)")
+      date_from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive ERPNext site-local date (YYYY-MM-DD)"),
+      date_to_exclusive:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Exclusive ERPNext site-local date (YYYY-MM-DD)")
     })
   },async({date_from,date_to_exclusive})=>{
     try{
