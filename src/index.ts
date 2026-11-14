@@ -66,6 +66,66 @@ function createServer(env:Env):McpServer{
     description:"Read-only, index-aware ERPNext tools and approved fields. Requires installed metadata API.",
     inputSchema:z.object({})
   },async()=>output({mode:"read-only",doctypes:FIELDS,max_page_size:MAX_ROWS,metadata_endpoint:"erp_mcp_table_profile",large_table_threshold:100000}));
+  const analyticsDoctypes = ["Patient","Lead","Patient Appointment","Patient Encounter","Clinical Procedure","Sales Invoice"] as const;
+  const groupings: Record<string,readonly string[]> = {
+    "Patient":["territory","sex"],
+    "Lead":["source","status","territory"],
+    "Patient Appointment":["status","practitioner","department"],
+    "Patient Encounter":["practitioner","company"],
+    "Clinical Procedure":["practitioner","procedure_template","status"],
+    "Sales Invoice":["docstatus","customer"]
+  };
+  const aggregateSchema=z.object({
+    doctype:z.enum(analyticsDoctypes),
+    date_from:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+    date_to_exclusive:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+    metric:z.enum(["count","sum_base_grand_total"]).default("count"),
+    group_by:z.string().max(60).default(""),
+    filter_field:z.string().max(60).default(""),
+    filter_value:z.string().max(100).default("")
+  });
+  function validateAggregate(params:z.infer<typeof aggregateSchema>) {
+    const start=Date.parse(params.date_from+"T00:00:00Z");
+    const end=Date.parse(params.date_to_exclusive+"T00:00:00Z");
+    const days=(end-start)/86400000;
+    if(!Number.isInteger(days)||days<1||days>31) throw new Error("Date window must be 1-31 days");
+    const groups=groupings[params.doctype];
+    if(params.group_by&&!groups.includes(params.group_by))throw new Error("Group field is not approved");
+    if(params.filter_field&&!groups.includes(params.filter_field))throw new Error("Filter field is not approved");
+    if(Boolean(params.filter_field)!==Boolean(params.filter_value))throw new Error("Provide filter field AND value");
+    if(params.metric==="sum_base_grand_total"&&params.doctype!=="Sales Invoice")throw new Error("SUM is approved only for Sales Invoice");
+    if(params.doctype==="Sales Invoice"&&params.filter_field==="docstatus"&&!["0","1","2"].includes(params.filter_value))throw new Error("Invalid docstatus");
+  }
+  server.registerTool("erp_prepare_read_query",{
+    description:"READ-ONLY PLANNING. Check the index and table size before a reusable aggregate query; returns the exact date/metric/group/filter requested. No patient data query is executed. Ask for the user's explicit approval before using erp_run_read_query.",
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+    inputSchema:aggregateSchema
+  },async(params)=>{
+    try{
+      validateAggregate(params);
+      const p=await getProfile(env,params.doctype);
+      const creationIdx=p.indexes.find(i=>i.columns[0]==="creation");
+      if(!creationIdx)throw new Error("No leading creation index; refusing to plan aggregate");
+      return output({query_ready:true,requires_user_approval:true,request:params,table_size_estimate:p.approximate_rows,index_name:creationIdx.index_name,server_will_check_explain:true,server_script:"erp_mcp_read_query"});
+    }catch(e){return rejected(e);}
+  });
+  server.registerTool("erp_run_read_query",{
+    description:"SENSITIVE LIVE READ. You MUST ask the user for explicit permission for this exact date/metric/filter/group request and WAIT for their answer BEFORE invoking. Also configure the ChatGPT app permission to Always ask. Reusable backend-constructed parameterized SELECT aggregation only; rejects arbitrary SQL/Python, non-indexed or unsafe EXPLAIN plans. Not a general System Console executor.",
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+    inputSchema:aggregateSchema
+  },async(params)=>{
+    try{
+      validateAggregate(params);
+      const p=await getProfile(env,params.doctype);
+      if(!p.indexes.some(i=>i.columns[0]==="creation"))throw new Error("No creation leading index; refusing query");
+      const result=await erpGet(env,"/api/method/erp_mcp_read_query",{
+        doctype:params.doctype,date_from:params.date_from,date_to:params.date_to_exclusive,
+        metric:params.metric,group_by:params.group_by,filter_field:params.filter_field,
+        filter_value:params.filter_value
+      });
+      return output(result?.message??result);
+    }catch(e){return rejected(e);}
+  });
   server.registerTool("erp_count_patients",{
     description:"SENSITIVE LIVE DATABASE READ. Before calling, explicitly ask the user for permission to run this specific Patient COUNT with the exact date range, and wait for approval. User should configure ChatGPT permission mode Always ask. Only calls an approved parameterized, read-only, index-checked ERPNext v14 count endpoint; never executes user SQL.",
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
