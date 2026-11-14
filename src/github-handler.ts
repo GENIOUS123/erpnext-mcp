@@ -16,6 +16,19 @@ import {
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
 
+// Use one canonical public callback for GitHub OAuth. Request hostnames may
+// vary through proxies/workers.dev; GitHub OAuth Apps register one callback.
+function publicCallbackUri(bindings: Env): string {
+  const origin = new URL(bindings.MCP_PUBLIC_ORIGIN || "https://mcp.erclens.com");
+  if (origin.protocol !== "https:" || origin.username || origin.password ||
+      origin.pathname !== "/" || origin.search || origin.hash ||
+      origin.hostname !== "mcp.erclens.com") {
+    throw new Error("Invalid MCP_PUBLIC_ORIGIN; expected https://mcp.erclens.com");
+  }
+  return new URL("/callback", origin).href;
+}
+
+
 // Public liveness endpoint. Do not expose binding values or OAuth identities.
 app.get("/health", (c) => c.json({
   status:"ok",
@@ -40,7 +53,7 @@ app.get("/authorize", async (c) => {
 		// Skip approval dialog but still create secure state and bind to session
 		const { stateToken } = await createOAuthState(oauthReqInfo, c.env.OAUTH_KV);
 		const { setCookie: sessionBindingCookie } = await bindStateToSession(stateToken);
-		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, new Headers({ "Set-Cookie": sessionBindingCookie }));
+		return redirectToGithub(stateToken, c.env.GITHUB_CLIENT_ID, publicCallbackUri(c.env), new Headers({ "Set-Cookie": sessionBindingCookie }));
 	}
 
 	// Generate CSRF protection for the approval form
@@ -103,7 +116,7 @@ app.post("/authorize", async (c) => {
 		headers.append("Set-Cookie", approvedClientCookie);
 		headers.append("Set-Cookie", sessionBindingCookie);
 
-		return redirectToGithub(c.req.raw, stateToken, c.env.GITHUB_CLIENT_ID, headers);
+		return redirectToGithub(stateToken, c.env.GITHUB_CLIENT_ID, publicCallbackUri(c.env), headers);
 	} catch (error: any) {
 		console.error("POST /authorize error:", error);
 		if (error instanceof OAuthError) {
@@ -115,15 +128,15 @@ app.post("/authorize", async (c) => {
 });
 
 async function redirectToGithub(
-  request: Request,
   stateToken: string,
   clientId: string,
+  callbackUri: string,
   headers: Headers = new Headers(),
 ) {
   // Keep multiple Set-Cookie values separate through the OAuth redirect.
   headers.set("location", getUpstreamAuthorizeUrl({
     client_id: clientId,
-    redirect_uri: new URL("/callback", request.url).href,
+    redirect_uri: callbackUri,
     scope: "read:user",
     state: stateToken,
     upstream_url: "https://github.com/login/oauth/authorize",
@@ -174,7 +187,7 @@ app.get("/callback", async (c) => {
 		client_id: c.env.GITHUB_CLIENT_ID,
 		client_secret: c.env.GITHUB_CLIENT_SECRET,
 		code: c.req.query("code"),
-		redirect_uri: new URL("/callback", c.req.url).href,
+		redirect_uri: publicCallbackUri(c.env),
 		upstream_url: "https://github.com/login/oauth/access_token",
 	});
 	if (errResponse) return errResponse;
