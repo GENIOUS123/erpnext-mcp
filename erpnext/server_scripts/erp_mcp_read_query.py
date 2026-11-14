@@ -101,6 +101,17 @@ if group_by:
     group_sql = " GROUP BY `" + group_by + "` ORDER BY total DESC LIMIT 50"
 
 statement = "SELECT " + measure + " FROM " + table_sql + where_sql + group_sql
+# Fail closed unless this database session has a server-enforced query timeout.
+# Cloudflare HTTP aborts alone do NOT interrupt MariaDB queries.
+timeout_state = frappe.db.sql(
+    "SELECT @@max_statement_time AS seconds", as_dict=True
+)
+if not timeout_state:
+    frappe.throw("REFUSED: SQL timeout configuration unavailable")
+sql_timeout = float(timeout_state[0].get("seconds") or 0)
+if sql_timeout <= 0 or sql_timeout > 5:
+    frappe.throw("REFUSED: dedicated database connection requires max_statement_time from 0 to 5 seconds")
+
 # Validate the actual optimizer plan before executing the aggregate.
 plan = frappe.db.sql("EXPLAIN " + statement, tuple(values), as_dict=True)
 if not plan:
