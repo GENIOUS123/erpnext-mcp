@@ -81,7 +81,7 @@ function createServer(env:Env):McpServer{
     note:"ERPNext Server Script installation and DB timeout need a separate live test"
   }));
   server.registerTool("erp_capabilities",{
-    description:"Read-only, index-aware ERPNext tools and approved fields. Requires installed metadata API.",
+    description:"Read-only ERPNext tools and approved fields. Requires installed metadata API.",
     inputSchema:z.object({})
   },async()=>output({mode:"read-only",doctypes:FIELDS,max_page_size:MAX_ROWS,metadata_endpoint:"erp_mcp_table_profile",large_table_threshold:100000}));
   const analyticsDoctypes = ["Patient","Lead","Patient Appointment","Patient Encounter","Clinical Procedure","Sales Invoice"] as const;
@@ -128,50 +128,22 @@ function createServer(env:Env):McpServer{
       new Date(end).toISOString().slice(0,10)===params.date_to_exclusive;
   }
   server.registerTool("erp_prepare_read_query",{
-    description:"READ-ONLY PLANNING. Check the index and table size before a reusable aggregate query; returns the exact date/metric/group/filter requested. No patient data query is executed. Ask for the user's explicit approval before using erp_run_read_query.",
+    description:"READ-ONLY PLANNING. Validate the date/metric/group/filter requested. No patient data query is executed. Ask for the user's explicit approval before using erp_run_read_query.",
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
     inputSchema:aggregateSchema
   },async(params)=>{
     try{
       validateAggregate(params);
-      const p=await getProfile(env,params.doctype);
-      const creationIdx=p.indexes.find(i=>i.columns[0]==="creation");
-      if(!creationIdx){
-        if(!isDailyPatientCountFallback(params))throw new Error("No leading creation index; refusing to plan aggregate");
-        // The request is eligible for the fixed one-day fallback; backend
-        // availability and MariaDB timeout enforcement are checked by the
-        // dedicated endpoint at execution time. No SQL executes during planning.
-        return output({query_ready:true,requires_user_approval:true,request:params,
-          table_size_estimate:p.approximate_rows,fallback:"bounded_patient_daily_count",
-          backend_validation:"at_execution",server_script:"erp_mcp_daily_patient_count",
-          note:"Planning accepted; execution requires the dedicated timeout-protected endpoint. No count has been executed."});
-      }
-      return output({query_ready:true,requires_user_approval:true,request:params,table_size_estimate:p.approximate_rows,index_name:creationIdx.index_name,server_will_check_explain:true,server_script:"erp_mcp_read_query"});
+      return output({query_ready:true,requires_user_approval:true,request:params,server_script:"erp_mcp_read_query",note:"No index precondition; backend database timeout policy still applies."});
     }catch(e){return rejected(e);}
   });
   server.registerTool("erp_run_read_query",{
-    description:"SENSITIVE LIVE READ. You MUST ask the user for explicit permission for this exact date/metric/filter/group request and WAIT for their answer BEFORE invoking. Also configure the ChatGPT app permission to Always ask. Reusable backend-constructed parameterized SELECT aggregation only; rejects arbitrary SQL/Python, non-indexed or unsafe EXPLAIN plans. Not a general System Console executor.",
+    description:"SENSITIVE LIVE READ. You MUST ask the user for explicit permission for this exact date/metric/filter/group request and WAIT for their answer BEFORE invoking. Also configure the ChatGPT app permission to Always ask. Reusable backend-constructed parameterized SELECT aggregation only; rejects arbitrary SQL/Python, queries missing server-side timeout enforcement. Not a general System Console executor.",
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
     inputSchema:aggregateSchema
   },async(params)=>{
     try{
       validateAggregate(params);
-      const p=await getProfile(env,params.doctype);
-      if(!p.indexes.some(i=>i.columns[0]==="creation")){
-        if(!isDailyPatientCountFallback(params))throw new Error("No creation leading index; refusing query");
-        // Dedicated, fixed-COUNT endpoint must apply a MariaDB per-statement
-        // timeout. Missing backend method fails closed, not via general API.
-        const fallback=await erpGet(env,"/api/method/erp_mcp_daily_patient_count",{
-          date_from:params.date_from,date_to_exclusive:params.date_to_exclusive
-        });
-        const data=fallback?.message;
-        if(data?.bounded_fallback!==true||data?.doctype!=="Patient"||
-           data?.metric!=="count"||data?.date_from!==params.date_from||
-           data?.date_to_exclusive!==params.date_to_exclusive||
-           typeof data?.total!=="number"||!Number.isSafeInteger(data.total)||data.total<0)
-          throw new Error("Daily count backend did not return an approved bounded response");
-        return output(data);
-      }
       const result=await erpGet(env,"/api/method/erp_mcp_read_query",{
         doctype:params.doctype,date_from:params.date_from,date_to:params.date_to_exclusive,
         metric:params.metric,group_by:params.group_by,filter_field:params.filter_field,
@@ -185,7 +157,7 @@ function createServer(env:Env):McpServer{
     inputSchema:z.object({doctype:z.string().min(1).max(80)})
   },async({doctype})=>{try{return output(await getProfile(env,doctype));}catch(e){return rejected(e);}});
   server.registerTool("erp_query_plan",{
-    description:"Mandatory safe-query preflight. Examines live table size, index leading columns, page budget, and 31-day indexed date bound; does not fetch records.",
+    description:"Read-only query preflight for allowlisted fields, valid filters and bounded pagination; no index required.",
     inputSchema:z.object({
       doctype:z.string().min(1).max(80),
       fields:z.array(z.string()).min(1).max(16),
@@ -203,7 +175,7 @@ function createServer(env:Env):McpServer{
     }catch(e){return rejected(e);}
   });
   server.registerTool("erp_list_records",{
-    description:"Index-aware read-only record retrieval. Automatically checks live information_schema metadata and fails closed for unsafe scans, missing indexes, long date windows or deep pagination.",
+    description:"Read-only allowlisted record retrieval with strict page and offset limits; no index required.",
     inputSchema:z.object({
       doctype:z.string().min(1).max(80),
       fields:z.array(z.string()).min(1).max(16),
