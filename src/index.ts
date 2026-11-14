@@ -274,7 +274,7 @@ function createServer(env:Env):McpServer{
         link_field_count:Array.isArray(msg.link_fields)?msg.link_fields.length:null});
     }catch(e){
       const err=e instanceof Error?e.message:"Unknown backend error";
-      const statusMatch=err.match(/HTTP (\\d{3})/);
+      const statusMatch=err.match(/HTTP (\d{3})/);
       const status=statusMatch?Number(statusMatch[1]):null;
       let error_code="UPSTREAM_FAILURE";
       if(status===401||status===403)error_code="ERP_AUTHORIZATION_FAILURE";
