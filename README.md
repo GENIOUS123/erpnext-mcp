@@ -179,3 +179,42 @@ Checklist to diagnose errors after deployment:
 - Inspect Cloudflare Worker logs for `/authorize` and `/callback` errors. Do not log or send OAuth authorization codes, tokens, secrets or cookies.
 - Reconnect the existing ChatGPT MCP app after any OAuth client-registration changes.
 - GitHub source changes are not proof of Cloudflare deployment or an end-to-end login.
+
+
+## Unindexed one-day Patient count fallback (2026-11-14)
+
+When `tabPatient.creation` has no leading index, the Worker now offers a **narrow,
+fail-closed exception** for an exact one-day, ungrouped Patient `count` with
+no extra filters. Normal indexed aggregate queries and list queries retain
+their existing safety checks. No `ALTER TABLE` is performed.
+
+**Two-stage setup:**
+1. Review `erpnext/server_scripts/erp_mcp_daily_patient_count.py`; this is a
+   separate fixed-purpose API Server Script, not a general SQL executor.
+2. Set `ALLOWED_INTEGRATION_USER` to the **dedicated ERP API key user's email**
+   inside the reviewed script. Do not allow Guest, and do not expose the API
+   to unrelated users. The raw aggregate intentionally counts all Patient
+   records, so this identity must be approved for cross-location totals.
+3. Install as an ERPNext v14 Server Script: Type **API**, method
+   `erp_mcp_daily_patient_count`, Allow Guest **unchecked**, enabled.
+4. Verify in a non-production environment that Frappe safe_exec and your
+   MariaDB 10.6 driver support `SET STATEMENT max_statement_time=2 FOR SELECT`.
+   The timeout must be enforced by **MariaDB**, not by Cloudflare alone.
+   If execution rejects this statement, leave the fallback disabled.
+5. Use the MCP `erp_prepare_read_query` with date range spanning exactly one
+   calendar day. Without an index, the preparer reports
+   `requires_backend_setup: true` and `query_ready: false`: this does **not**
+   claim that the ERP backend was deployed or tested.
+6. After explicit user approval, `erp_run_read_query` calls only this
+   dedicated endpoint for the exceptional case and verifies that the response
+   contains the expected `bounded_fallback`, dates, metric, and integer total.
+
+**Performance warning:** A one-day predicate without an index can still
+read the entire ~697k-row Patient table. A 2-second database cap limits
+statement duration, but does not guarantee the query will succeed. Prefer a
+materialized daily summary or a carefully reviewed index for dependable
+analytics. Do not expand this fallback to groupings, list reads, larger
+date windows, or other DocTypes without a separate workload/security review.
+
+**Deployment:** GitHub commits do not install ERPNext Server Scripts or
+deploy Cloudflare automatically. Deploy and validate before using production.
