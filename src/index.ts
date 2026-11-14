@@ -1,6 +1,7 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { FIELDS, assertFields, fieldsFor, validateFilters } from "./policy";
+import { FIELDS, assertFields, fieldsFor, validateFilters, type Filter } from "./policy";
+import { planQuery, assertProfile, type TableProfile, MAX_ROWS } from "./query-guard";
 
 interface Env {
   ERP_BASE_URL: string;
@@ -8,95 +9,107 @@ interface Env {
   ERP_API_SECRET: string;
   MCP_ACCESS_TOKEN: string;
 }
-function resourceUrl(env: Env, doctype: string, params: Record<string, string>): URL {
-  const base = new URL(env.ERP_BASE_URL);
-  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new Error("ERP_BASE_URL must be clean HTTPS");
-  const url = new URL("/api/resource/" + encodeURIComponent(doctype), base.origin);
-  Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
-  return url;
+function baseUrl(env:Env):URL {
+  const base=new URL(env.ERP_BASE_URL);
+  if(base.protocol!=="https:"||base.username||base.password||base.search||base.hash||base.pathname!=="/")
+    throw new Error("ERP_BASE_URL must be a clean HTTPS origin");
+  return base;
 }
-async function erpGet(env: Env, doctype: string, params: Record<string,string>): Promise<unknown> {
-  const url = resourceUrl(env, doctype, params);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
+async function erpGet(env:Env,path:string,params:Record<string,string>):Promise<any>{
+  const url=new URL(path,baseUrl(env).origin);
+  Object.entries(params).forEach(([k,v])=>url.searchParams.set(k,v));
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),8000);
   try {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: { Authorization: "token " + env.ERP_API_KEY + ":" + env.ERP_API_SECRET, Accept: "application/json" },
-      redirect: "error",
-      signal: controller.signal
+    const response=await fetch(url.toString(),{
+      method:"GET",
+      headers:{Authorization:"token "+env.ERP_API_KEY+":"+env.ERP_API_SECRET,Accept:"application/json"},
+      redirect:"error",
+      signal:controller.signal
     });
-    if (!response.ok) throw new Error("ERP request failed (HTTP " + response.status + ")");
-    const raw = await response.text();
-    if (raw.length > 250000) throw new Error("ERP response exceeded size limit");
+    if(!response.ok)throw new Error("ERP endpoint failed (HTTP "+response.status+")");
+    const raw=await response.text();
+    if(raw.length>150000)throw new Error("ERP response exceeds 150KB");
     return JSON.parse(raw);
-  } finally { clearTimeout(timeout); }
+  }finally{clearTimeout(timeout);}
 }
-function output(v: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(v) }] };
+async function getProfile(env:Env,doctype:string):Promise<TableProfile>{
+  fieldsFor(doctype);
+  // No fallback: the live metadata API must be installed and reachable.
+  const result=await erpGet(env,"/api/method/erp_mcp_table_profile",{doctype});
+  const profile=result?.message as TableProfile;
+  assertProfile(profile,doctype);
+  return profile;
 }
-function createServer(env: Env): McpServer {
-  const server = new McpServer({ name: "erpnext-v14-readonly", version: "0.1.0" });
-  server.registerTool("erp_capabilities", {
-    description: "List strictly allowlisted ERPNext v14 DocTypes and readable fields; never modifies ERP data.",
-    inputSchema: z.object({})
-  }, async () => output({ mode: "read-only", doctypes: FIELDS, max_page_size: 100 }));
-  server.registerTool("erp_list_records", {
-    description: "Fetch permitted ERPNext records using Frappe v14's GET /api/resource. Explicit field, filter and page allowlists apply. No writes or SQL.",
-    inputSchema: z.object({
-      doctype: z.string().min(1).max(80),
-      fields: z.array(z.string()).min(1).max(24),
-      filters: z.array(z.tuple([z.string(), z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.union([z.string(), z.number(), z.boolean()]))])])).max(12).default([]),
-      limit_start: z.number().int().min(0).max(100000).default(0),
-      limit_page_length: z.number().int().min(1).max(100).default(25),
-      order_by: z.enum(["creation asc","creation desc","modified asc","modified desc","name asc","name desc"]).default("creation desc")
+function output(v:unknown){return {content:[{type:"text" as const,text:JSON.stringify(v)}]};}
+function rejected(e:unknown){return {isError:true,...output({error:e instanceof Error?e.message:"Query rejected"})};}
+const filterValue=z.union([z.string(),z.number(),z.boolean(),z.array(z.union([z.string(),z.number(),z.boolean()]))]);
+const filtersSchema=z.array(z.tuple([z.string(),z.string(),filterValue])).max(8).default([]);
+function createServer(env:Env):McpServer{
+  const server=new McpServer({name:"erpnext-v14-readonly",version:"0.2.0"});
+  server.registerTool("erp_capabilities",{
+    description:"Read-only, index-aware ERPNext tools and approved fields. Requires installed metadata API.",
+    inputSchema:z.object({})
+  },async()=>output({mode:"read-only",doctypes:FIELDS,max_page_size:MAX_ROWS,metadata_endpoint:"erp_mcp_table_profile",large_table_threshold:100000}));
+  server.registerTool("erp_table_profile",{
+    description:"Read live approximate table size (InnoDB estimates), data/index size and existing composite indexes before planning any new query.",
+    inputSchema:z.object({doctype:z.string().min(1).max(80)})
+  },async({doctype})=>{try{return output(await getProfile(env,doctype));}catch(e){return rejected(e);}});
+  server.registerTool("erp_query_plan",{
+    description:"Mandatory safe-query preflight. Examines live table size, index leading columns, page budget, and 31-day indexed date bound; does not fetch records.",
+    inputSchema:z.object({
+      doctype:z.string().min(1).max(80),
+      fields:z.array(z.string()).min(1).max(16),
+      filters:filtersSchema,
+      limit_start:z.number().int().min(0).max(1000).default(0),
+      limit_page_length:z.number().int().min(1).max(MAX_ROWS).default(25),
+      order_by:z.enum(["creation asc","creation desc","modified asc","modified desc","name asc","name desc"]).default("creation desc")
     })
-  }, async ({doctype,fields,filters,limit_start,limit_page_length,order_by}) => {
-    try {
-      const requested = assertFields(doctype, fields);
-      if (!fieldsFor(doctype).includes(order_by.split(" ")[0])) throw new Error("Order field is not allowlisted");
-      const safeFilters = validateFilters(doctype, filters);
-      const result = await erpGet(env,doctype,{
-        fields: JSON.stringify(requested),
-        filters: JSON.stringify(safeFilters),
-        limit_start: String(limit_start),
-        limit_page_length: String(limit_page_length),
+  },async({doctype,fields,filters,limit_start,limit_page_length,order_by})=>{
+    try{
+      const safeFields=assertFields(doctype,fields);
+      const safeFilters=validateFilters(doctype,filters as Filter[]);
+      const profile=await getProfile(env,doctype);
+      return output(planQuery(profile,safeFilters,safeFields,order_by,limit_start,limit_page_length));
+    }catch(e){return rejected(e);}
+  });
+  server.registerTool("erp_list_records",{
+    description:"Index-aware read-only record retrieval. Automatically checks live information_schema metadata and fails closed for unsafe scans, missing indexes, long date windows or deep pagination.",
+    inputSchema:z.object({
+      doctype:z.string().min(1).max(80),
+      fields:z.array(z.string()).min(1).max(16),
+      filters:filtersSchema,
+      limit_start:z.number().int().min(0).max(1000).default(0),
+      limit_page_length:z.number().int().min(1).max(MAX_ROWS).default(25),
+      order_by:z.enum(["creation asc","creation desc","modified asc","modified desc","name asc","name desc"]).default("creation desc")
+    })
+  },async({doctype,fields,filters,limit_start,limit_page_length,order_by})=>{
+    try{
+      const safeFields=assertFields(doctype,fields);
+      const safeFilters=validateFilters(doctype,filters as Filter[]);
+      const profile=await getProfile(env,doctype);
+      const decision=planQuery(profile,safeFilters,safeFields,order_by,limit_start,limit_page_length);
+      const result=await erpGet(env,"/api/resource/"+encodeURIComponent(doctype),{
+        fields:JSON.stringify(safeFields),
+        filters:JSON.stringify(safeFilters),
+        limit_start:String(limit_start),
+        limit_page_length:String(limit_page_length),
         order_by
       });
-      return output(result);
-    } catch(e) { return { isError: true, ...output({error: e instanceof Error ? e.message : "Query rejected"}) }; }
-  });
-  server.registerTool("erp_count_records", {
-    description: "Count permitted ERPNext records using GET /api/resource with only name field, paginated. Use filtered list queries for exact aggregates. Max 10000 rows per count.",
-    inputSchema: z.object({
-      doctype: z.string().min(1).max(80),
-      filters: z.array(z.tuple([z.string(), z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.union([z.string(), z.number(), z.boolean()]))])])).max(12).default([])
-    })
-  }, async ({doctype,filters}) => {
-    try {
-      fieldsFor(doctype);
-      const safeFilters=validateFilters(doctype,filters);
-      // Count via pagination; avoids exposing unrestricted frappe.client.get_count method calls.
-      let total=0;
-      for (let offset=0;offset<10000;offset+=100) {
-        const result = await erpGet(env,doctype,{ fields:'["name"]',filters:JSON.stringify(safeFilters),limit_start:String(offset),limit_page_length:"100",order_by:"name asc" }) as {data?: unknown[]};
-        const n=Array.isArray(result.data)?result.data.length:0;
-        total+=n;
-        if(n<100) return output({doctype,count:total,truncated:false});
-      }
-      return output({doctype,count_at_least:10000,truncated:true});
-    } catch(e) { return {isError:true,...output({error:e instanceof Error?e.message:"Query rejected"})};}
+      return output({query_safety:decision,data:result?.data??[]});
+    }catch(e){return rejected(e);}
   });
   return server;
 }
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (new URL(request.url).pathname === "/health") return new Response(JSON.stringify({status:"ok", mode:"read-only"}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
-    if (!env.MCP_ACCESS_TOKEN || !env.ERP_API_KEY || !env.ERP_API_SECRET || !env.ERP_BASE_URL)
-      return new Response("Not configured", {status:503});
-    if (request.headers.get("Authorization") !== "Bearer " + env.MCP_ACCESS_TOKEN)
+  async fetch(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
+    const path=new URL(request.url).pathname;
+    if(path==="/health")return new Response(JSON.stringify({status:"ok",mode:"read-only",requires_profile_endpoint:true}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
+    if(path!=="/mcp")return new Response("Not Found",{status:404});
+    if(!env.MCP_ACCESS_TOKEN||!env.ERP_API_KEY||!env.ERP_API_SECRET||!env.ERP_BASE_URL)
+      return new Response("Not configured",{status:503});
+    if(request.headers.get("Authorization")!=="Bearer "+env.MCP_ACCESS_TOKEN)
       return new Response("Unauthorized",{status:401,headers:{"WWW-Authenticate":'Bearer realm="erpnext-mcp"'}});
-    if(new URL(request.url).pathname !== "/mcp") return new Response("Not Found",{status:404});
-    return createMcpHandler(() => createServer(env), {maxRequestBodySize:65536}).fetch(request);
+    return createMcpHandler(()=>createServer(env)).fetch(request);
   }
 } satisfies ExportedHandler<Env>;
