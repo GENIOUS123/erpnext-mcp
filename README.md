@@ -90,3 +90,35 @@ GitHub OAuth source is now on `main` using the Cloudflare Workers OAuth Provider
 **Security:** OAuth tokens are issued only after the GitHub API returns the configured numeric user ID. The MCP tool factory also checks the bound GitHub ID before exposing any ERP data tools. ERP tool implementations retain mandatory index/table-size inspection and strictly read-only GET requests.
 
 **Critical:** This is a source update; it has not been verified to build or run in your account. If the Cloudflare deployment log reports missing `OAUTH_KV`, create the binding first, then redeploy. Keep the previous working deployment until configuration and tests succeed.
+
+## Patient counts with explicit per-query approval
+
+A new tool `erp_count_patients` performs a **database-side aggregate COUNT**, not a client-side scan/pagination loop. For example, to count Patients created on 14 November 2026, the permitted date parameters are:
+- `date_from=2026-11-14`
+- `date_to_exclusive=2026-11-15`
+
+The corresponding **fixed** SQL is:
+
+```sql
+SELECT COUNT(*) AS total
+FROM `tabPatient`
+WHERE creation >= %s AND creation < %s
+```
+
+Values are parameterized. The MCP tool accepts **only dates**, never arbitrary SQL or Python. The ERPNext Server Script must check permission and a leading `creation` index before executing the SELECT.
+
+### Manual ERP installation (required)
+
+1. Review `erpnext/server_scripts/erp_mcp_count_patients.py`.
+2. In ERPNext v14, create a **Server Script**, type **API**, API Method `erp_mcp_count_patients`, **Allow Guest unchecked**.
+3. Paste the script, save and enable manually. Keep the integration user's Patient Read permissions minimal.
+4. If the creation index is absent, the script refuses the count; ask an administrator to review indexing manually. The MCP never creates indexes.
+5. Configure a **database-side max statement time** for the integration's SQL execution path before running heavy reports. A Cloudflare HTTP timeout does not cancel an already-running MariaDB query.
+
+### Require approval on every query
+
+Set the **ChatGPT plugin's permission mode to Always ask** for the actual connected ERPNext MCP plugin. The tool description independently instructs the assistant to ask the user and wait for explicit approval of each requested date range. This is an approval **policy**, not a cryptographic authorization guarantee: the Worker cannot verify a user confirmation originating from ChatGPT. If hard server-side approval is required, implement an external approval/token workflow before enabling broad analytic SQL. Do not claim a boolean argument or a model prompt constitutes secure user consent.
+
+### Important scope
+
+The new tool handles Patient creation counts only. More aggregations should be added as separately reviewed, fixed, parameterized, read-only endpoints with indexed predicates and narrow date windows. **Do not expose an arbitrary SQL executor or a generic System Console API.**
