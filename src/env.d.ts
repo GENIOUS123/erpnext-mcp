@@ -3,6 +3,7 @@ import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 declare global {
   interface Env {
     ERP_BASE_URL: string;
+    MCP_PUBLIC_ORIGIN: string;
     ERP_API_KEY: string;
     ERP_API_SECRET: string;
     GITHUB_CLIENT_ID: string;
