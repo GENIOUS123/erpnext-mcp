@@ -8,7 +8,7 @@ import { FIELDS, assertFields, fieldsFor, validateFilters, type Filter } from ".
 import { planQuery, assertProfile, type TableProfile, MAX_ROWS } from "./query-guard";
 
 const BUILD_ID = "universal-debug-20261114-1";
-const REGISTERED_TOOL_NAMES = ["erp_connection_status","erp_capabilities","erp_prepare_read_query","erp_run_read_query","erp_universal_read","erp_table_profile","erp_query_plan","erp_list_records"] as const;
+const REGISTERED_TOOL_NAMES = ["erp_connection_status","erp_capabilities","erp_prepare_read_query","erp_run_read_query","erp_universal_read","erp_universal_diagnostics","erp_table_profile","erp_query_plan","erp_list_records"] as const;
 
 interface Env {
   ERP_BASE_URL: string;
