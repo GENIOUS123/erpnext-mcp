@@ -351,7 +351,8 @@ function createServer(env:Env):McpServer{
           const entries=result?.data??[];
           const checks=[];
           for(const item of entries){
-            let fingerprint={name:item.name,api_method:item.api_method,disabled:item.disabled,script_type:item.script_type,
+            let fingerprint:{name:string;api_method:string;disabled:unknown;script_type:string;code_visible:boolean;has_new_payload_handler:boolean|null;has_old_json_parser:boolean|null}={
+              name:String(item.name),api_method:String(item.api_method),disabled:item.disabled,script_type:String(item.script_type),
               code_visible:false,has_new_payload_handler:null,has_old_json_parser:null};
             try{
               const one=await erpGet(env,"/api/resource/Server Script/"+encodeURIComponent(item.name),{});
