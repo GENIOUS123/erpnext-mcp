@@ -289,9 +289,81 @@ function createServer(env:Env):McpServer{
   // Reuse the existing tool names and *their original input schemas* so a stale
   // catalog can still access the universal ERPNext API without a reinstall.
   // Prefixes on erp_table_profile are metadata only; no patient data is read.
+  // Generic read-only access is delegated to ERPNext's /api/resource,
+  // which enforces DocType permissions for the integration identity.
+  // Do not pass arbitrary SQL to the universal SQL Server Script.
+  function safeDocTypeName(name:string):string{
+    if(!/^[A-Za-z][A-Za-z0-9 _-]{0,79}$/.test(name))
+      throw new Error("Invalid DocType identifier");
+    return name;
+  }
+  function safeGenericFields(fields:string[]):string[]{
+    if(fields.length<1||fields.length>16)throw new Error("Select 1 to 16 fields");
+    const blocked=/(?:password|passwd|api_key|api_secret|secret|token|private_key|client_secret|session_id|authorization|credential|otp|recovery_code)/i;
+    for(const field of fields){
+      if(!/^[A-Za-z_][A-Za-z0-9_]{0,79}$/.test(field)||blocked.test(field))
+        throw new Error("Unsafe or invalid field selection");
+    }
+    return [...new Set(fields)];
+  }
+  function safeGenericFilters(filters:Filter[]):Filter[]{
+    if(filters.length>8)throw new Error("Too many filters");
+    for(const f of filters){
+      if(f.length!==3||!safeGenericFieldName(f[0])||
+         !["=",">",">=","<","<=","in","between"].includes(f[1]))
+        throw new Error("Unsupported filter");
+      if(Array.isArray(f[2])){
+        if(!["in","between"].includes(f[1])||f[2].length<1||f[2].length>30)
+          throw new Error("Invalid filter array");
+        if(f[1]==="between"&&f[2].length!==2)throw new Error("between requires two values");
+      }else if(["in","between"].includes(f[1]))throw new Error("Array required for filter");
+      if(JSON.stringify(f[2]).length>1500)throw new Error("Filter too long");
+    }
+    return filters;
+  }
+  function safeGenericFieldName(field:string):boolean{
+    return /^[A-Za-z_][A-Za-z0-9_]{0,79}$/.test(field)&&
+      !/(?:password|passwd|api_key|api_secret|secret|token|private_key|client_secret|session_id|authorization|credential|otp|recovery_code)/i.test(field);
+  }
+  async function genericDocTypeSchema(doctype:string,diagnostic:boolean){
+    const name=safeDocTypeName(doctype);
+    const result=await erpGet(env,"/api/resource/DocType/"+encodeURIComponent(name),{});
+    const doc=result?.data;
+    if(!doc||doc.name!==name)throw new Error("DocType metadata not found or not authorized");
+    const fields=Array.isArray(doc.fields)?doc.fields:[];
+    const meta=fields.filter((f:any)=>typeof f.fieldname==="string").map((f:any)=>({
+      fieldname:f.fieldname,fieldtype:f.fieldtype,options:f.options,
+      reqd:f.reqd,read_only:f.read_only,default:f.default
+    }));
+    let customFields:any[]=[];
+    try{
+      const cf=await erpGet(env,"/api/resource/Custom Field",{
+        fields:JSON.stringify(["fieldname","fieldtype","options","reqd","read_only","default"]),
+        filters:JSON.stringify([["dt","=",name]]),limit_page_length:"100"
+      });
+      customFields=Array.isArray(cf?.data)?cf.data:[];
+    }catch{}
+    const all=[...meta,...customFields.map((f:any)=>({...f,custom:true}))];
+    const links=all.filter(f=>f.fieldtype==="Link"||f.fieldtype==="Dynamic Link")
+      .map(f=>({fieldname:f.fieldname,options:f.options,fieldtype:f.fieldtype}));
+    if(diagnostic)return {success:true,mode:"schema",doctype:name,column_count:all.length,
+      link_count:links.length,source:"permission_aware_metadata"};
+    return {success:true,mode:"schema",doctype:name,fields:all,link_fields:links,
+      source:"permission_aware_metadata",note:"Fields are metadata, not guaranteed physical DB columns"};
+  }
   async function universalSchemaProbe(doctype:string,diagnostic:boolean){
-    const known=["Clinical Procedure","Sales Invoice","Sales Invoice Item","Healthcare Service Unit","Patient Encounter","Opportunity","Patient Appointment","Sales Order","Patient"];
-    if(!known.includes(doctype))throw new Error("Unsupported schema probe DocType");
+    safeDocTypeName(doctype);
+    // Prefer permission-aware ERPNext metadata for *every* DocType.
+    // The legacy universal schema endpoint remains available for safe SQL joins.
+    try{
+      const info=await genericDocTypeSchema(doctype,diagnostic);
+      return {...info,bridge:"erp_table_profile",build_id:BUILD_ID};
+    }catch(e){
+      // Metadata permissions or missing native DocType. Preserve the existing
+      // universal-schema functionality only for its originally approved tables.
+      const legacy=["Clinical Procedure","Sales Invoice","Sales Invoice Item","Healthcare Service Unit","Patient Encounter","Opportunity","Patient Appointment","Sales Order","Patient"];
+      if(!legacy.includes(doctype))throw e;
+    }
     try{
       const r=await erpPost(env,"/api/method/erp_mcp_universal_read",{
         payload:JSON.stringify({mode:"schema",doctype})
@@ -434,7 +506,7 @@ function createServer(env:Env):McpServer{
     }catch(e){return rejected(e);}
   });
   server.registerTool("erp_query_plan",{
-    description:"Read-only query preflight. For compatibility use doctype __UNIVERSAL__ and fields[0] containing a JSON universal query object; does not execute, requires explicit approval before erp_list_records.",
+    description:"Read-only query preflight for any ERP-permitted DocType using REST; schema:<DocType> for metadata. For compatibility use doctype __UNIVERSAL__ and fields[0] containing a JSON universal query object; does not execute, requires explicit approval before erp_list_records.",
     inputSchema:z.object({
       doctype:z.string().min(1).max(80),
       fields:z.array(z.string()).min(1).max(16),
@@ -451,6 +523,17 @@ function createServer(env:Env):McpServer{
           requires_user_approval:true,request:query,
           note:"Planning only. To execute with explicit approval, call erp_list_records with same doctype and fields JSON."});
       }
+      if(!FIELDS[doctype]){
+        const name=safeDocTypeName(doctype);
+        const selected=safeGenericFields(fields);
+        const predicates=safeGenericFilters(filters as Filter[]);
+        if(limit_page_length>50||limit_start>1000)throw new Error("Pagination exceeds bounds");
+        return output({query_ready:true,source:"ERPNext permission-aware REST API",
+          read_only:true,doctype:name,fields:selected,filters:predicates,
+          limit_start,limit_page_length,order_by,
+          requires_user_approval:true,
+          note:"Data read requires ERPNext permission and must be explicitly approved. No raw SQL."});
+      }
       const safeFields=assertFields(doctype,fields);
       const safeFilters=validateFilters(doctype,filters as Filter[]);
       const profile=await getProfile(env,doctype);
@@ -458,7 +541,7 @@ function createServer(env:Env):McpServer{
     }catch(e){return rejected(e);}
   });
   server.registerTool("erp_list_records",{
-    description:"Read-only allowlisted record retrieval. Compatibility: doctype __UNIVERSAL__, fields=[JSON query object], allows validated joined SELECT through universal API; ask explicit user approval before executing live data.",
+    description:"Read-only record retrieval for any ERP-permitted DocType through ERPNext permission-aware REST API. Compatibility: doctype __UNIVERSAL__, fields=[JSON query object], allows validated joined SELECT through universal API; ask explicit user approval before executing live data.",
     inputSchema:z.object({
       doctype:z.string().min(1).max(80),
       fields:z.array(z.string()).min(1).max(16),
@@ -476,6 +559,18 @@ function createServer(env:Env):McpServer{
         });
         const data=result?.message??result;
         return output({...data,bridge:"erp_list_records",build_id:BUILD_ID});
+      }
+      if(!FIELDS[doctype]){
+        const name=safeDocTypeName(doctype);
+        const selected=safeGenericFields(fields);
+        const predicates=safeGenericFilters(filters as Filter[]);
+        const result=await erpGet(env,"/api/resource/"+encodeURIComponent(name),{
+          fields:JSON.stringify(selected),filters:JSON.stringify(predicates),
+          limit_start:String(limit_start),limit_page_length:String(limit_page_length),order_by
+        });
+        return output({read_only:true,permission_enforced_by:"ERPNext",
+          doctype:name,count_returned:Array.isArray(result?.data)?result.data.length:0,
+          data:result?.data??[],source:"permission_aware_rest"});
       }
       const safeFields=assertFields(doctype,fields);
       const safeFilters=validateFilters(doctype,filters as Filter[]);
