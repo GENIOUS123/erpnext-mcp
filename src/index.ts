@@ -77,8 +77,8 @@ function createServer(env:Env):McpServer{
   };
   const aggregateSchema=z.object({
     doctype:z.enum(analyticsDoctypes),
-    date_from:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
-    date_to_exclusive:z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+    date_from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    date_to_exclusive:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     metric:z.enum(["count","sum_base_grand_total"]).default("count"),
     group_by:z.string().max(60).default(""),
     filter_field:z.string().max(60).default(""),
