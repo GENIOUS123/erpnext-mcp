@@ -24,6 +24,8 @@ function baseUrl(env:Env):URL {
   return base;
 }
 async function erpGet(env:Env,path:string,params:Record<string,string>):Promise<any>{
+  if(!env.ERP_API_KEY||!env.ERP_API_SECRET||!env.ERP_BASE_URL)
+    throw new Error("ERPNext API bindings are not configured on the Worker");
   const url=new URL(path,baseUrl(env).origin);
   Object.entries(params).forEach(([k,v])=>url.searchParams.set(k,v));
   const controller=new AbortController();
@@ -62,6 +64,18 @@ function createServer(env:Env):McpServer{
     throw new Error("Unauthorized GitHub account");
   }
   const server=new McpServer({name:"erpnext-v14-readonly",version:"0.2.0"});
+  server.registerTool("erp_connection_status",{
+    description:"Read-only MCP connectivity diagnostic: confirms OAuth identity and reports whether required ERPNext API environment bindings are present, without revealing their values. Does not query ERPNext.",
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+    inputSchema:z.object({})
+  },async()=>output({
+    oauth_authenticated:true,
+    github_user_authorized:true,
+    erp_configuration_present:Boolean(env.ERP_BASE_URL&&env.ERP_API_KEY&&env.ERP_API_SECRET),
+    read_only:true,
+    gateway_api_method:"erp_mcp_read_query",
+    note:"ERPNext Server Script installation and DB timeout need a separate live test"
+  }));
   server.registerTool("erp_capabilities",{
     description:"Read-only, index-aware ERPNext tools and approved fields. Requires installed metadata API.",
     inputSchema:z.object({})
@@ -181,8 +195,9 @@ const apiHandler = {
   fetch(request:Request, bindings:Env, ctx:ExecutionContext) {
     if(new URL(request.url).pathname==="/health")
       return new Response(JSON.stringify({status:"ok",mode:"read-only",oauth:true}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
-    if(!bindings.ERP_API_KEY||!bindings.ERP_API_SECRET||!bindings.ERP_BASE_URL||!bindings.GITHUB_ALLOWED_USER_ID)
-      return new Response("Not configured",{status:503});
+    // OAuthProvider has already verified the MCP bearer token. Do not hide
+    // tool discovery when ERP credentials are missing; guarded ERP calls fail
+    // closed inside erpGet instead, with an actionable configuration error.
     return mcpHandler(request,bindings,ctx);
   }
 } satisfies ExportedHandler<Env>;
