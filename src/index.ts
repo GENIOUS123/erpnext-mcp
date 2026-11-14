@@ -1,5 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/server";
-import { createMcpHandler } from "agents/mcp/server";
+import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { FIELDS, assertFields, fieldsFor, validateFilters } from "./policy";
 
@@ -98,6 +97,6 @@ export default {
     if (request.headers.get("Authorization") !== "Bearer " + env.MCP_ACCESS_TOKEN)
       return new Response("Unauthorized",{status:401,headers:{"WWW-Authenticate":'Bearer realm="erpnext-mcp"'}});
     if(new URL(request.url).pathname !== "/mcp") return new Response("Not Found",{status:404});
-    return createMcpHandler(() => createServer(env), {corsOptions:false})(request,env,ctx);
+    return createMcpHandler(() => createServer(env), {maxRequestBodySize:65536}).fetch(request);
   }
 } satisfies ExportedHandler<Env>;
