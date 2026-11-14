@@ -376,7 +376,8 @@ function createServer(env:Env):McpServer{
         const result=await erpPost(env,"/api/method/erp_mcp_universal_read",{
           payload:JSON.stringify({mode:"query",query})
         });
-        return output({...result?.message??result,bridge:"erp_list_records",build_id:BUILD_ID});
+        const data=result?.message??result;
+        return output({...data,bridge:"erp_list_records",build_id:BUILD_ID});
       }
       const safeFields=assertFields(doctype,fields);
       const safeFilters=validateFilters(doctype,filters as Filter[]);
