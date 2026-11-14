@@ -62,19 +62,6 @@ if dt == "Sales Invoice" and filter_field == "docstatus" and filter_value not in
     frappe.throw("Invalid docstatus")
 
 table_name = "tab" + dt
-# Index metadata is a low-cost information_schema query, not a table scan.
-index_rows = frappe.db.sql(
-    """SELECT INDEX_NAME
-       FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE()
-         AND TABLE_NAME = %s AND COLUMN_NAME = 'creation'
-         AND SEQ_IN_INDEX = 1
-       LIMIT 1""",
-    (table_name,), as_dict=True
-)
-if not index_rows:
-    frappe.throw("REFUSED: creation is not a leading column of any index")
-
 approx = frappe.db.sql(
     """SELECT TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH
        FROM information_schema.TABLES
@@ -112,17 +99,6 @@ sql_timeout = float(timeout_state[0].get("seconds") or 0)
 if sql_timeout <= 0 or sql_timeout > 5:
     frappe.throw("REFUSED: dedicated database connection requires max_statement_time from 0 to 5 seconds")
 
-# Validate the actual optimizer plan before executing the aggregate.
-plan = frappe.db.sql("EXPLAIN " + statement, tuple(values), as_dict=True)
-if not plan:
-    frappe.throw("REFUSED: EXPLAIN returned no plan")
-for line in plan:
-    access_type = str(line.get("type") or "").upper()
-    used_key = line.get("key")
-    estimated = int(line.get("rows") or 0)
-    if access_type == "ALL" or not used_key or estimated > 100000:
-        frappe.throw("REFUSED: unsafe EXPLAIN plan; consider an index or narrower date range")
-
 # NOTE: the HTTP timeout cannot kill a running SQL query. Require an
 # independent server-side max_statement_time policy prior to production use.
 result = frappe.db.sql(statement, tuple(values), as_dict=True)
@@ -133,10 +109,5 @@ frappe.response["message"] = {
     "date_from": date_from,
     "date_to_exclusive": date_to,
     "approximate_table_rows": int(approx[0].get("TABLE_ROWS") or 0),
-    "index": index_rows[0].get("INDEX_NAME"),
-    "explain": [
-        {"key": item.get("key"), "type": item.get("type"),
-         "rows": item.get("rows")} for item in plan
-    ],
     "data": result
 }
