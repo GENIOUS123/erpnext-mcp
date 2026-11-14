@@ -34,9 +34,12 @@ async function erpGet(env:Env,path:string,params:Record<string,string>):Promise<
     const response=await fetch(url.toString(),{
       method:"GET",
       headers:{Authorization:"token "+env.ERP_API_KEY+":"+env.ERP_API_SECRET,Accept:"application/json"},
-      redirect:"error",
+      redirect:"manual",
       signal:controller.signal
     });
+    // Do not follow redirects: ERP requests must stay on the configured HTTPS origin.
+    if(response.status>=300&&response.status<400)
+      throw new Error("ERP endpoint returned HTTP redirect ("+response.status+"); refusing to follow");
     if(!response.ok)throw new Error("ERP endpoint failed (HTTP "+response.status+")");
     const raw=await response.text();
     if(raw.length>150000)throw new Error("ERP response exceeds 150KB");
