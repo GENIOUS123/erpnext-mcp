@@ -16,6 +16,15 @@ import {
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
 
+// Public liveness endpoint. Do not expose binding values or OAuth identities.
+app.get("/health", (c) => c.json({
+  status:"ok",
+  service:"erpnext-mcp",
+  mode:"read-only",
+  oauth:true,
+  mcp_path:"/mcp"
+}));
+
 app.get("/authorize", async (c) => {
 	if (!c.env.COOKIE_ENCRYPTION_KEY || c.env.COOKIE_ENCRYPTION_KEY.length < 32) {
 		return c.text("OAuth is not configured: COOKIE_ENCRYPTION_KEY secret must contain at least 32 characters", 503);
